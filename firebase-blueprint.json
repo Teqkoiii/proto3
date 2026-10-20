@@ -1,0 +1,120 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User account info and preferences",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 256 },
+        "firstName": { "type": "string", "maxLength": 50 },
+        "lastNameInitial": { "type": "string", "maxLength": 5 },
+        "courseOfStudy": { "type": "string", "maxLength": 100 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email"]
+    },
+    "CommunityProfile": {
+      "title": "CommunityProfile",
+      "description": "Public community profile for partner matching and gym visibility",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "maxLength": 128 },
+        "firstName": { "type": "string", "maxLength": 50 },
+        "lastNameInitial": { "type": "string", "maxLength": 5 },
+        "courseOfStudy": { "type": "string", "maxLength": 100 },
+        "trainingGoals": { "type": "array" },
+        "preferredTimes": { "type": "array" },
+        "bio": { "type": "string", "maxLength": 300 },
+        "isPublicPresence": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "firstName"]
+    },
+    "PartnerRequest": {
+      "title": "PartnerRequest",
+      "description": "Invitation between two gym members to train together",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "senderId": { "type": "string", "maxLength": 128 },
+        "senderName": { "type": "string", "maxLength": 60 },
+        "receiverId": { "type": "string", "maxLength": 128 },
+        "receiverName": { "type": "string", "maxLength": 60 },
+        "note": { "type": "string", "maxLength": 300 },
+        "proposedDate": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "accepted", "declined", "cancelled"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["senderId", "receiverId", "status"]
+    },
+    "Conversation": {
+      "title": "Conversation",
+      "description": "Direct chat conversation between gym members",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "participantIds": { "type": "array" },
+        "participantNames": { "type": "object" },
+        "lastMessageText": { "type": "string", "maxLength": 500 },
+        "lastMessageAt": { "type": "string", "format": "date-time" },
+        "lastSenderId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "participantIds"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "Individual chat message in a conversation",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "conversationId": { "type": "string", "maxLength": 128 },
+        "senderId": { "type": "string", "maxLength": 128 },
+        "senderName": { "type": "string", "maxLength": 60 },
+        "text": { "type": "string", "maxLength": 1000 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "conversationId", "senderId", "text"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "User alert for partner requests, messages, and slot reminders",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "type": { "type": "string", "enum": ["partner_request", "partner_accepted", "new_message", "slot_reminder", "gym_alert"] },
+        "title": { "type": "string", "maxLength": 120 },
+        "message": { "type": "string", "maxLength": 300 },
+        "read": { "type": "boolean" },
+        "linkUrl": { "type": "string", "maxLength": 200 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "type", "title", "message", "read"]
+    }
+  },
+  "firestore": {
+    "/community_profiles/{profileId}": {
+      "schema": { "$ref": "#/entities/CommunityProfile" },
+      "description": "Public profiles for partner matching and training buddy discovery"
+    },
+    "/partner_requests/{requestId}": {
+      "schema": { "$ref": "#/entities/PartnerRequest" },
+      "description": "Requests and invitations between students for mutual gym sessions"
+    },
+    "/conversations/{conversationId}": {
+      "schema": { "$ref": "#/entities/Conversation" },
+      "description": "Chat conversations between connected gym members"
+    },
+    "/conversations/{conversationId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/ChatMessage" },
+      "description": "Individual chat messages within a conversation"
+    },
+    "/users/{userId}/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/Notification" },
+      "description": "Personal notifications and slot reminders for a user"
+    }
+  }
+}

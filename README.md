@@ -1,11 +1,31 @@
-<div align="center">
+# DHBW Gym Community
 
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+A community and training platform for DHBW Bad Mergentheim with workout planning, progress tracking, a weekly calendar, and community features.
 
-  <h1>Built with AI Studio</h2>
+## Requirements
 
-  <p>The fastest path from prompt to production with Gemini.</p>
+- Node.js
+- npm
 
-  <a href="https://aistudio.google.com/apps">Start building</a>
+## Run locally
 
-</div>
+```powershell
+npm ci
+npm run dev
+```
+
+## Checks
+
+```powershell
+npm run lint
+npm test
+npm run build
+```
+
+## Configuration
+
+Required environment variables are documented in `.env.example`. Store real keys only in a local, untracked `.env` file. Never publish API keys, passwords, or other credentials.
+
+## Project status
+
+This application is under development. Before public use, hosting, database operations, authentication, privacy, and production configuration must be reviewed.

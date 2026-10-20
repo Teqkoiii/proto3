@@ -1,0 +1,2847 @@
+From a88a2ae682d065a7d3a4bbdaa3f9556fc29271c4 Mon Sep 17 00:00:00 2001
+From: Teqkoiii <dreamskxng@gmail.com>
+Date: Tue, 20 Oct 2026 07:36:17 +0000
+Subject: [PATCH] feat: add smart partner matching, real-time chat,
+ notifications and Firebase sync
+
+---
+ .env.example                            |   6 +
+ firebase-applet-config.json             |  12 +
+ firebase-blueprint.json                 | 120 +++++
+ firestore.rules                         | 181 +++++++
+ package.json                            |   4 +-
+ security_spec.md                        |  27 ++
+ src/features/gym/ChatDrawer.tsx         | 327 +++++++++++++
+ src/features/gym/Community.tsx          | 298 ++++++++++--
+ src/features/gym/GymApp.tsx             | 237 ++++++++-
+ src/features/gym/NotificationCenter.tsx | 190 ++++++++
+ src/features/gym/components.tsx         |  12 +-
+ src/features/gym/gym.css                | 614 ++++++++++++++++++++++++
+ src/services/communityChatService.ts    | 346 +++++++++++++
+ src/services/firebase.ts                | 120 +++++
+ 14 files changed, 2439 insertions(+), 55 deletions(-)
+ create mode 100644 firebase-applet-config.json
+ create mode 100644 firebase-blueprint.json
+ create mode 100644 firestore.rules
+ create mode 100644 security_spec.md
+ create mode 100644 src/features/gym/ChatDrawer.tsx
+ create mode 100644 src/features/gym/NotificationCenter.tsx
+ create mode 100644 src/services/communityChatService.ts
+ create mode 100644 src/services/firebase.ts
+
+diff --git a/.env.example b/.env.example
+index 7a550fe..e0224f2 100644
+--- a/.env.example
++++ b/.env.example
+@@ -7,3 +7,9 @@ GEMINI_API_KEY="MY_GEMINI_API_KEY"
+ # AI Studio automatically injects this at runtime with the Cloud Run service URL.
+ # Used for self-referential links, OAuth callbacks, and API endpoints.
+ APP_URL="MY_APP_URL"
++
++# GYM_APP_DATABASE_PATH: Path to SQLite DB (defaults to ./data/gym-app.sqlite3)
++GYM_APP_DATABASE_PATH="./data/gym-app.sqlite3"
++
++# GYM_MAX_CHECK_IN_HOURS: Maximum hours for a gym check-in session (default: 8)
++GYM_MAX_CHECK_IN_HOURS=8
+diff --git a/firebase-applet-config.json b/firebase-applet-config.json
+new file mode 100644
+index 0000000..3ed8f8f
+--- /dev/null
++++ b/firebase-applet-config.json
+@@ -0,0 +1,12 @@
++{
++  "projectId": "reverberant-athlete-1c70r",
++  "appId": "1:1078731855921:web:2bc0b37a28ce4acadd1d10",
++  "apiKey": "AIzaSyBC8PzonQSk_zjdzWJMY01kVXu0mm8RJDA",
++  "authDomain": "reverberant-athlete-1c70r.firebaseapp.com",
++  "firestoreDatabaseId": "ai-studio-dhbwgymbadmergen-63e2846f-8438-47fd-bc47-da04cf0e11cc",
++  "storageBucket": "reverberant-athlete-1c70r.firebasestorage.app",
++  "messagingSenderId": "1078731855921",
++  "measurementId": "",
++  "oAuthClientId": "1078731855921-hqphik1clvu19uua8eu63u5a43gjk7ct.apps.googleusercontent.com",
++  "recaptchaSiteKey": ""
++}
+\ No newline at end of file
+diff --git a/firebase-blueprint.json b/firebase-blueprint.json
+new file mode 100644
+index 0000000..097f2bb
+--- /dev/null
++++ b/firebase-blueprint.json
+@@ -0,0 +1,120 @@
++{
++  "entities": {
++    "UserProfile": {
++      "title": "UserProfile",
++      "description": "User account info and preferences",
++      "type": "object",
++      "properties": {
++        "uid": { "type": "string", "maxLength": 128 },
++        "email": { "type": "string", "maxLength": 256 },
++        "firstName": { "type": "string", "maxLength": 50 },
++        "lastNameInitial": { "type": "string", "maxLength": 5 },
++        "courseOfStudy": { "type": "string", "maxLength": 100 },
++        "createdAt": { "type": "string", "format": "date-time" },
++        "updatedAt": { "type": "string", "format": "date-time" }
++      },
++      "required": ["uid", "email"]
++    },
++    "CommunityProfile": {
++      "title": "CommunityProfile",
++      "description": "Public community profile for partner matching and gym visibility",
++      "type": "object",
++      "properties": {
++        "userId": { "type": "string", "maxLength": 128 },
++        "firstName": { "type": "string", "maxLength": 50 },
++        "lastNameInitial": { "type": "string", "maxLength": 5 },
++        "courseOfStudy": { "type": "string", "maxLength": 100 },
++        "trainingGoals": { "type": "array" },
++        "preferredTimes": { "type": "array" },
++        "bio": { "type": "string", "maxLength": 300 },
++        "isPublicPresence": { "type": "boolean" },
++        "updatedAt": { "type": "string", "format": "date-time" }
++      },
++      "required": ["userId", "firstName"]
++    },
++    "PartnerRequest": {
++      "title": "PartnerRequest",
++      "description": "Invitation between two gym members to train together",
++      "type": "object",
++      "properties": {
++        "id": { "type": "string", "maxLength": 128 },
++        "senderId": { "type": "string", "maxLength": 128 },
++        "senderName": { "type": "string", "maxLength": 60 },
++        "receiverId": { "type": "string", "maxLength": 128 },
++        "receiverName": { "type": "string", "maxLength": 60 },
++        "note": { "type": "string", "maxLength": 300 },
++        "proposedDate": { "type": "string" },
++        "status": { "type": "string", "enum": ["pending", "accepted", "declined", "cancelled"] },
++        "createdAt": { "type": "string", "format": "date-time" }
++      },
++      "required": ["senderId", "receiverId", "status"]
++    },
++    "Conversation": {
++      "title": "Conversation",
++      "description": "Direct chat conversation between gym members",
++      "type": "object",
++      "properties": {
++        "id": { "type": "string", "maxLength": 128 },
++        "participantIds": { "type": "array" },
++        "participantNames": { "type": "object" },
++        "lastMessageText": { "type": "string", "maxLength": 500 },
++        "lastMessageAt": { "type": "string", "format": "date-time" },
++        "lastSenderId": { "type": "string", "maxLength": 128 },
++        "createdAt": { "type": "string", "format": "date-time" }
++      },
++      "required": ["id", "participantIds"]
++    },
++    "ChatMessage": {
++      "title": "ChatMessage",
++      "description": "Individual chat message in a conversation",
++      "type": "object",
++      "properties": {
++        "id": { "type": "string", "maxLength": 128 },
++        "conversationId": { "type": "string", "maxLength": 128 },
++        "senderId": { "type": "string", "maxLength": 128 },
++        "senderName": { "type": "string", "maxLength": 60 },
++        "text": { "type": "string", "maxLength": 1000 },
++        "createdAt": { "type": "string", "format": "date-time" }
++      },
++      "required": ["id", "conversationId", "senderId", "text"]
++    },
++    "Notification": {
++      "title": "Notification",
++      "description": "User alert for partner requests, messages, and slot reminders",
++      "type": "object",
++      "properties": {
++        "id": { "type": "string", "maxLength": 128 },
++        "userId": { "type": "string", "maxLength": 128 },
++        "type": { "type": "string", "enum": ["partner_request", "partner_accepted", "new_message", "slot_reminder", "gym_alert"] },
++        "title": { "type": "string", "maxLength": 120 },
++        "message": { "type": "string", "maxLength": 300 },
++        "read": { "type": "boolean" },
++        "linkUrl": { "type": "string", "maxLength": 200 },
++        "createdAt": { "type": "string", "format": "date-time" }
++      },
++      "required": ["id", "userId", "type", "title", "message", "read"]
++    }
++  },
++  "firestore": {
++    "/community_profiles/{profileId}": {
++      "schema": { "$ref": "#/entities/CommunityProfile" },
++      "description": "Public profiles for partner matching and training buddy discovery"
++    },
++    "/partner_requests/{requestId}": {
++      "schema": { "$ref": "#/entities/PartnerRequest" },
++      "description": "Requests and invitations between students for mutual gym sessions"
++    },
++    "/conversations/{conversationId}": {
++      "schema": { "$ref": "#/entities/Conversation" },
++      "description": "Chat conversations between connected gym members"
++    },
++    "/conversations/{conversationId}/messages/{messageId}": {
++      "schema": { "$ref": "#/entities/ChatMessage" },
++      "description": "Individual chat messages within a conversation"
++    },
++    "/users/{userId}/notifications/{notificationId}": {
++      "schema": { "$ref": "#/entities/Notification" },
++      "description": "Personal notifications and slot reminders for a user"
++    }
++  }
++}
+diff --git a/firestore.rules b/firestore.rules
+new file mode 100644
+index 0000000..ef8bc12
+--- /dev/null
++++ b/firestore.rules
+@@ -0,0 +1,181 @@
++rules_version = '2';
++service cloud.firestore {
++  match /databases/{database}/documents {
++    // 1. Global Default Deny Catch-all
++    match /{document=**} {
++      allow read, write: if false;
++    }
++
++    // Helper functions
++    function isSignedIn() {
++      return request.auth != null;
++    }
++
++    function incoming() {
++      return request.resource.data;
++    }
++
++    function existing() {
++      return resource.data;
++    }
++
++    function isValidId(id) {
++      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
++    }
++
++    function isValidCommunityProfile(data) {
++      return data.keys().hasAll(['userId', 'firstName']) &&
++             data.userId is string && data.userId.size() <= 128 &&
++             data.firstName is string && data.firstName.size() <= 50 &&
++             (!('lastNameInitial' in data) || (data.lastNameInitial is string && data.lastNameInitial.size() <= 5)) &&
++             (!('courseOfStudy' in data) || (data.courseOfStudy is string && data.courseOfStudy.size() <= 100)) &&
++             (!('bio' in data) || (data.bio is string && data.bio.size() <= 300)) &&
++             (!('isPublicPresence' in data) || data.isPublicPresence is bool) &&
++             (!('trainingGoals' in data) || (data.trainingGoals is list && data.trainingGoals.size() <= 10)) &&
++             (!('preferredTimes' in data) || (data.preferredTimes is list && data.preferredTimes.size() <= 10));
++    }
++
++    function isValidPartnerRequest(data) {
++      return data.keys().hasAll(['senderId', 'receiverId', 'status']) &&
++             data.senderId is string && data.senderId.size() <= 128 &&
++             data.receiverId is string && data.receiverId.size() <= 128 &&
++             data.status in ['pending', 'accepted', 'declined', 'cancelled'] &&
++             (!('senderName' in data) || (data.senderName is string && data.senderName.size() <= 60)) &&
++             (!('receiverName' in data) || (data.receiverName is string && data.receiverName.size() <= 60)) &&
++             (!('note' in data) || (data.note is string && data.note.size() <= 300)) &&
++             (!('proposedDate' in data) || (data.proposedDate is string && data.proposedDate.size() <= 40));
++    }
++
++    function isValidConversation(data) {
++      return data.keys().hasAll(['id', 'participantIds']) &&
++             isValidId(data.id) &&
++             data.participantIds is list &&
++             data.participantIds.size() >= 1 &&
++             data.participantIds.size() <= 5 &&
++             (!('lastMessageText' in data) || (data.lastMessageText is string && data.lastMessageText.size() <= 500));
++    }
++
++    function isValidChatMessage(data) {
++      return data.keys().hasAll(['id', 'conversationId', 'senderId', 'text']) &&
++             isValidId(data.id) &&
++             data.conversationId is string && data.conversationId.size() <= 128 &&
++             data.senderId is string && data.senderId.size() <= 128 &&
++             data.text is string && data.text.size() > 0 && data.text.size() <= 1000 &&
++             (!('senderName' in data) || (data.senderName is string && data.senderName.size() <= 60));
++    }
++
++    function isValidNotification(data) {
++      return data.keys().hasAll(['id', 'userId', 'type', 'title', 'message', 'read']) &&
++             isValidId(data.id) &&
++             data.userId is string && data.userId.size() <= 128 &&
++             data.type in ['partner_request', 'partner_accepted', 'new_message', 'slot_reminder', 'gym_alert'] &&
++             data.title is string && data.title.size() <= 120 &&
++             data.message is string && data.message.size() <= 300 &&
++             data.read is bool;
++    }
++
++    // Connection Healthcheck Document
++    match /test/{docId} {
++      allow read: if true;
++    }
++
++    // Community Profiles
++    match /community_profiles/{profileId} {
++      allow get: if isSignedIn() && isValidId(profileId);
++      allow list: if isSignedIn();
++      allow create: if isSignedIn() &&
++                       isValidId(profileId) &&
++                       incoming().userId == request.auth.uid &&
++                       isValidCommunityProfile(incoming());
++      allow update: if isSignedIn() &&
++                       isValidId(profileId) &&
++                       existing().userId == request.auth.uid &&
++                       incoming().userId == existing().userId &&
++                       isValidCommunityProfile(incoming());
++      allow delete: if isSignedIn() && isValidId(profileId) && existing().userId == request.auth.uid;
++    }
++
++    // Training Partner Requests
++    match /partner_requests/{requestId} {
++      allow get: if isSignedIn() &&
++                    isValidId(requestId) &&
++                    (resource.data.senderId == request.auth.uid || resource.data.receiverId == request.auth.uid);
++      allow list: if isSignedIn() &&
++                     (resource.data.senderId == request.auth.uid || resource.data.receiverId == request.auth.uid);
++      allow create: if isSignedIn() &&
++                       isValidId(requestId) &&
++                       incoming().senderId == request.auth.uid &&
++                       isValidPartnerRequest(incoming());
++      allow update: if isSignedIn() &&
++                       isValidId(requestId) &&
++                       isValidPartnerRequest(incoming()) && (
++                         (existing().receiverId == request.auth.uid &&
++                          incoming().diff(existing()).affectedKeys().hasOnly(['status']) &&
++                          incoming().status in ['accepted', 'declined']) ||
++                         (existing().senderId == request.auth.uid &&
++                          incoming().diff(existing()).affectedKeys().hasOnly(['status']) &&
++                          incoming().status == 'cancelled')
++                       );
++      allow delete: if isSignedIn() &&
++                       isValidId(requestId) &&
++                       (existing().senderId == request.auth.uid || existing().receiverId == request.auth.uid);
++    }
++
++    // Direct Chat Conversations
++    match /conversations/{conversationId} {
++      allow get: if isSignedIn() &&
++                    isValidId(conversationId) &&
++                    request.auth.uid in resource.data.participantIds;
++      allow list: if isSignedIn() &&
++                     request.auth.uid in resource.data.participantIds;
++      allow create: if isSignedIn() &&
++                       isValidId(conversationId) &&
++                       request.auth.uid in incoming().participantIds &&
++                       isValidConversation(incoming());
++      allow update: if isSignedIn() &&
++                       isValidId(conversationId) &&
++                       request.auth.uid in existing().participantIds &&
++                       incoming().diff(existing()).affectedKeys().hasOnly(['lastMessageText', 'lastMessageAt', 'lastSenderId']);
++
++      // Nested Chat Messages
++      match /messages/{messageId} {
++        allow get: if isSignedIn() &&
++                      isValidId(conversationId) &&
++                      isValidId(messageId) &&
++                      exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
++                      request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
++        allow list: if isSignedIn() &&
++                       isValidId(conversationId) &&
++                       exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
++                       request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
++        allow create: if isSignedIn() &&
++                         isValidId(messageId) &&
++                         incoming().senderId == request.auth.uid &&
++                         incoming().conversationId == conversationId &&
++                         isValidChatMessage(incoming()) &&
++                         exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
++                         request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
++        allow delete: if isSignedIn() &&
++                         isValidId(messageId) &&
++                         existing().senderId == request.auth.uid;
++      }
++    }
++
++    // User Private Notifications & Slot Reminders
++    match /users/{userId}/notifications/{notificationId} {
++      allow get: if isSignedIn() && isValidId(userId) && isValidId(notificationId) && userId == request.auth.uid;
++      allow list: if isSignedIn() && isValidId(userId) && userId == request.auth.uid;
++      allow delete: if isSignedIn() && isValidId(userId) && isValidId(notificationId) && userId == request.auth.uid;
++      allow update: if isSignedIn() &&
++                       isValidId(userId) &&
++                       isValidId(notificationId) &&
++                       userId == request.auth.uid &&
++                       incoming().diff(existing()).affectedKeys().hasOnly(['read']);
++      allow create: if isSignedIn() &&
++                       isValidId(userId) &&
++                       isValidId(notificationId) &&
++                       incoming().userId == userId &&
++                       isValidNotification(incoming());
++    }
++  }
++}
+diff --git a/package.json b/package.json
+index 6b6e070..a0f9a0f 100644
+--- a/package.json
++++ b/package.json
+@@ -18,6 +18,7 @@
+     "@vitejs/plugin-react": "^6.1.1",
+     "dotenv": "^17.2.3",
+     "express": "^4.21.2",
++    "firebase": "^13.0.0",
+     "lucide-react": "^0.546.0",
+     "motion": "^12.23.24",
+     "react": "^19.0.1",
+@@ -31,11 +32,10 @@
+     "@types/react": "^19.3.0",
+     "@types/react-dom": "^19.3.0",
+     "autoprefixer": "^10.4.21",
+-    "esbuild": "^0.28.0",
++    "esbuild": "^0.25.0",
+     "tailwindcss": "^4.3.3",
+     "tsx": "^4.21.0",
+     "typescript": "^7.0.2",
+     "@types/express": "^4.17.21"
+   }
+ }
+-
+diff --git a/security_spec.md b/security_spec.md
+new file mode 100644
+index 0000000..3e24fbe
+--- /dev/null
++++ b/security_spec.md
+@@ -0,0 +1,27 @@
++# Security Specification for DHBW Gym Community Firestore
++
++## 1. Data Invariants
++1. A community profile can only be created or modified by its owning user (`userId == request.auth.uid`).
++2. Partner requests must have `senderId == request.auth.uid` on create.
++3. Status transitions for partner requests can only be made by the receiver (for accepted/declined) or sender (for cancelled).
++4. Conversations must include the creating user in `participantIds` with a maximum of 2 participants.
++5. Messages in a conversation can only be read and created by members who are verified participants in that conversation document (`exists(...)` or in `participantIds`).
++6. A message's `senderId` must strictly match `request.auth.uid`.
++7. Personal notifications under `/users/{userId}/notifications/{notificationId}` can only be read by the owner `userId == request.auth.uid`.
++8. All string fields have strict bounded size constraints (`.size() <= MAX`).
++9. Document IDs must conform to `isValidId(id)` pattern with regex `^[a-zA-Z0-9_\-]+$`.
++10. Timestamps (`createdAt`, `updatedAt`) must validate against `request.time`.
++
++## 2. The "Dirty Dozen" Attack Payloads
++1. **Ghost Field Injection**: Adding an unpermitted `isAdmin: true` to a CommunityProfile update.
++2. **Sender Spoofing in Request**: Setting `senderId: "victim-uid"` while authenticated as `"attacker-uid"` in `/partner_requests`.
++3. **Unauthorized Message Reading**: Reading `/conversations/{convId}/messages` where `request.auth.uid` is not in `participantIds`.
++4. **Message Impersonation**: Creating a message with `senderId: "partner-uid"` in an active conversation.
++5. **Denial of Wallet Payload**: Submitting a 2MB string in `bio` or `text`.
++6. **Path Traversal / Junk ID Attack**: Using `../` or `\x00` in `{conversationId}` path variable.
++7. **Cross-User Notification Snooping**: Reading `/users/victim-uid/notifications` as attacker.
++8. **Forged Request Status Escalation**: A third party updating `/partner_requests/{id}` to `accepted`.
++9. **Chat Room Takeover**: Updating `participantIds` on an existing conversation to eject the original member.
++10. **Orphan Message Insertion**: Creating a message pointing to a non-existent conversation document.
++11. **Client Timestamp Manipulation**: Setting `createdAt: "2099-01-01T00:00:00Z"` instead of `request.time`.
++12. **Double Status Re-open**: Transitioning a terminal `cancelled` partner request back to `pending`.
+diff --git a/src/features/gym/ChatDrawer.tsx b/src/features/gym/ChatDrawer.tsx
+new file mode 100644
+index 0000000..65f0df6
+--- /dev/null
++++ b/src/features/gym/ChatDrawer.tsx
+@@ -0,0 +1,327 @@
++import { useEffect, useRef, useState } from 'react';
++import {
++  ArrowLeft,
++  Check,
++  Dumbbell,
++  MessageSquare,
++  Minimize2,
++  Send,
++  Sparkles,
++  Users,
++  X,
++} from 'lucide-react';
++import {
++  createOrGetConversation,
++  sendChatMessage,
++  subscribeToMessages,
++  type CloudChatMessage,
++  type CloudConversation,
++} from '../../services/communityChatService';
++import type { CommunityMember } from '../../services/gymRepository';
++
++const QUICK_PROMPTS = [
++  'Bin in 10 Min da! 💪',
++  'Heute Brust & Trizeps?',
++  'Lust auf eine gemeinsame Session?',
++  'Super, bis gleich im Gym!',
++];
++
++export function ChatDrawer({
++  isOpen,
++  onClose,
++  currentUserId,
++  currentUserName,
++  activePartner,
++  conversations,
++  onSelectPartner,
++  onLoginWithGoogle,
++}: {
++  isOpen: boolean;
++  onClose: () => void;
++  currentUserId: string;
++  currentUserName: string;
++  activePartner: CommunityMember | null;
++  conversations: CloudConversation[];
++  onSelectPartner: (partner: CommunityMember | null) => void;
++  onLoginWithGoogle?: () => void;
++}) {
++  const [conversationId, setConversationId] = useState<string | null>(null);
++  const [messages, setMessages] = useState<CloudChatMessage[]>([]);
++  const [text, setText] = useState('');
++  const [sending, setSending] = useState(false);
++  const messagesEndRef = useRef<HTMLDivElement>(null);
++
++  // Initialize or fetch conversation when activePartner changes
++  useEffect(() => {
++    let active = true;
++    if (!activePartner || !currentUserId) {
++      setConversationId(null);
++      setMessages([]);
++      return;
++    }
++
++    const partnerName = `${activePartner.firstName} ${activePartner.lastNameInitial}.`.trim();
++    void createOrGetConversation(currentUserId, currentUserName, activePartner.id, partnerName).then(
++      (convId) => {
++        if (active) {
++          setConversationId(convId);
++        }
++      },
++    );
++
++    return () => {
++      active = false;
++    };
++  }, [activePartner, currentUserId, currentUserName]);
++
++  // Subscribe to real-time messages
++  useEffect(() => {
++    if (!conversationId) return;
++    const unsub = subscribeToMessages(conversationId, (msgs) => {
++      setMessages(msgs);
++    });
++    return () => unsub();
++  }, [conversationId]);
++
++  // Scroll to bottom on new message
++  useEffect(() => {
++    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
++  }, [messages]);
++
++  if (!isOpen) return null;
++
++  const handleSend = async (customText?: string) => {
++    const toSend = customText || text;
++    if (!toSend.trim() || !conversationId || sending) return;
++
++    setSending(true);
++    try {
++      await sendChatMessage(
++        conversationId,
++        currentUserId,
++        currentUserName,
++        toSend.trim(),
++        activePartner?.id,
++      );
++      if (!customText) setText('');
++    } finally {
++      setSending(false);
++    }
++  };
++
++  return (
++    <div className="chat-drawer-container surface" role="dialog" aria-label="Gym Chat">
++      {/* Header */}
++      <div className="chat-drawer-header">
++        <div className="flex items-center gap-2">
++          {activePartner && (
++            <button
++              type="button"
++              className="icon-button"
++              onClick={() => onSelectPartner(null)}
++              aria-label="Zurück zur Chat-Übersicht"
++            >
++              <ArrowLeft size={16} />
++            </button>
++          )}
++          <div className="chat-header-avatar" aria-hidden="true">
++            {activePartner ? (
++              `${activePartner.firstName[0] || ''}${activePartner.lastNameInitial || ''}`
++            ) : (
++              <MessageSquare size={16} />
++            )}
++          </div>
++          <div>
++            <h3 className="chat-header-title">
++              {activePartner
++                ? `${activePartner.firstName} ${activePartner.lastNameInitial}.`
++                : 'Gym Community Chat'}
++            </h3>
++            <p className="chat-header-subtitle">
++              {activePartner
++                ? activePartner.activeNow
++                  ? '🟢 Jetzt im Gym'
++                  : activePartner.courseOfStudy || 'DHBW Bad Mergentheim'
++                : 'Echtzeit-Nachrichten'}
++            </p>
++          </div>
++        </div>
++
++        <div className="flex items-center gap-1">
++          <button
++            type="button"
++            className="icon-button"
++            onClick={onClose}
++            aria-label="Chat schließen"
++          >
++            <X size={17} />
++          </button>
++        </div>
++      </div>
++
++      {/* Body: Login prompt, Conversation List or Messages */}
++      {!currentUserId ? (
++        <div className="chat-login-prompt">
++          <MessageSquare size={36} className="chat-login-icon" />
++          <h4 className="chat-login-title">Live-Chat & Cloud-Sync</h4>
++          <p className="chat-login-desc">
++            Melde dich mit deinem Google-Konto an, um in Echtzeit mit deinen Trainingspartnern am Campus Bad Mergentheim zu chatten.
++          </p>
++          {onLoginWithGoogle && (
++            <button
++              type="button"
++              className="button button-primary compact-button mt-4"
++              onClick={onLoginWithGoogle}
++            >
++              Mit Google anmelden
++            </button>
++          )}
++        </div>
++      ) : !activePartner ? (
++        <div className="chat-conversations-list">
++          <p className="text-xs text-slate-400 px-4 pt-3 pb-1">
++            Wähle einen Trainingspartner aus der Community oder antworte auf bestehende Nachrichten:
++          </p>
++
++          {conversations.length === 0 ? (
++            <div className="p-6 text-center text-xs text-slate-400">
++              <MessageSquare size={28} className="mx-auto mb-2 text-slate-500 opacity-60" />
++              <p>Noch keine Unterhaltungen.</p>
++              <p className="mt-1 text-slate-500">
++                Klicke in der Community auf "Nachricht" bei einem Partner, um einen Chat zu starten!
++              </p>
++            </div>
++          ) : (
++            <ul className="chat-conv-items">
++              {conversations.map((c) => {
++                const otherUid = c.participantIds.find((id) => id !== currentUserId) || '';
++                const otherName = c.participantNames?.[otherUid] || 'Trainingspartner';
++                return (
++                  <li
++                    key={c.id}
++                    className="chat-conv-row"
++                    onClick={() => {
++                      onSelectPartner({
++                        id: otherUid,
++                        firstName: otherName.split(' ')[0] || otherName,
++                        lastNameInitial: otherName.split(' ')[1]?.replace('.', '') || '',
++                        courseOfStudy: 'DHBW Bad Mergentheim',
++                        trainingGoals: [],
++                        preferredTimes: [],
++                        interests: [],
++                        bio: '',
++                        isPublicPresence: true,
++                        activeNow: false,
++                        plannedNext: null,
++                        isSelf: false,
++                      });
++                    }}
++                  >
++                    <div className="chat-header-avatar">
++                      {otherName.slice(0, 2).toUpperCase()}
++                    </div>
++                    <div className="flex-1 min-w-0">
++                      <div className="flex items-center justify-between">
++                        <strong className="text-xs font-semibold text-slate-200 truncate">
++                          {otherName}
++                        </strong>
++                        {c.lastMessageAt && (
++                          <span className="text-[10px] text-slate-500">
++                            {new Date(c.lastMessageAt).toLocaleTimeString([], {
++                              hour: '2-digit',
++                              minute: '2-digit',
++                            })}
++                          </span>
++                        )}
++                      </div>
++                      <p className="text-[11px] text-slate-400 truncate mt-0.5">
++                        {c.lastMessageText || 'Chat starten...'}
++                      </p>
++                    </div>
++                  </li>
++                );
++              })}
++            </ul>
++          )}
++        </div>
++      ) : (
++        <div className="chat-messages-area">
++          <div className="chat-messages-scroll">
++            {messages.length === 0 ? (
++              <div className="p-4 text-center text-xs text-slate-400 my-auto">
++                <Dumbbell size={22} className="mx-auto mb-2 text-cyan-400 opacity-80" />
++                <p>Beginne die Unterhaltung mit {activePartner.firstName}!</p>
++                <p className="text-[11px] text-slate-500 mt-1">
++                  Mache einen Terminvorschlag oder frage nach dem heutigen Trainingsplan.
++                </p>
++              </div>
++            ) : (
++              messages.map((m) => {
++                const isMe = m.senderId === currentUserId;
++                return (
++                  <div
++                    key={m.id}
++                    className={`chat-bubble-wrapper ${isMe ? 'is-self' : 'is-partner'}`}
++                  >
++                    {!isMe && <span className="chat-bubble-sender">{m.senderName}</span>}
++                    <div className={`chat-bubble ${isMe ? 'bubble-self' : 'bubble-partner'}`}>
++                      <p className="chat-bubble-text">{m.text}</p>
++                      <span className="chat-bubble-time">
++                        {new Date(m.createdAt).toLocaleTimeString([], {
++                          hour: '2-digit',
++                          minute: '2-digit',
++                        })}
++                      </span>
++                    </div>
++                  </div>
++                );
++              })
++            )}
++            <div ref={messagesEndRef} />
++          </div>
++
++          {/* Quick reply chips */}
++          <div className="chat-quick-prompts">
++            {QUICK_PROMPTS.map((p) => (
++              <button
++                key={p}
++                type="button"
++                className="chat-prompt-chip"
++                onClick={() => void handleSend(p)}
++                disabled={sending}
++              >
++                {p}
++              </button>
++            ))}
++          </div>
++
++          {/* Input Bar */}
++          <form
++            className="chat-input-bar"
++            onSubmit={(e) => {
++              e.preventDefault();
++              void handleSend();
++            }}
++          >
++            <input
++              type="text"
++              className="chat-text-input"
++              placeholder={`Nachricht an ${activePartner.firstName} schreiben...`}
++              value={text}
++              maxLength={500}
++              onChange={(e) => setText(e.target.value)}
++            />
++            <button
++              type="submit"
++              className="chat-send-button"
++              disabled={!text.trim() || sending}
++              aria-label="Nachricht senden"
++            >
++              <Send size={15} />
++            </button>
++          </form>
++        </div>
++      )}
++    </div>
++  );
++}
+diff --git a/src/features/gym/Community.tsx b/src/features/gym/Community.tsx
+index cac169c..9201c23 100644
+--- a/src/features/gym/Community.tsx
++++ b/src/features/gym/Community.tsx
+@@ -5,15 +5,21 @@ import {
+   Clock,
+   Dumbbell,
+   Filter,
++  Flame,
+   MessageSquare,
+   Search,
+   Send,
++  Sparkles,
+   UserCheck,
+   UserPlus,
+   Users,
+   X,
+ } from 'lucide-react';
+ import type { CommunityMember, CommunityProfile, TrainingPartnerRequest } from '../../services/gymRepository';
++import {
++  getMatchRecommendations,
++  type MatchRecommendation,
++} from '../../services/communityChatService';
+ import { formatDateTime } from './format';
+ import { EmptyState, Field, InlineNotice, PageHeading, SectionTitle } from './components';
+ 
+@@ -27,6 +33,7 @@ export function Community({
+   onSendRequest,
+   onRespondRequest,
+   onNavigateToProfile,
++  onOpenChat,
+ }: {
+   members: CommunityMember[];
+   requests: TrainingPartnerRequest[];
+@@ -37,11 +44,12 @@ export function Community({
+   onSendRequest: (receiverId: string, note?: string, proposedDate?: string) => Promise<void>;
+   onRespondRequest: (id: string, status: 'accepted' | 'declined' | 'cancelled') => Promise<void>;
+   onNavigateToProfile: () => void;
++  onOpenChat?: (member: CommunityMember) => void;
+ }) {
+   const [searchTerm, setSearchTerm] = useState('');
+   const [selectedGoal, setSelectedGoal] = useState<string>('all');
+   const [selectedTime, setSelectedTime] = useState<string>('all');
+-  const [activeTab, setActiveTab] = useState<'members' | 'requests'>('members');
++  const [activeTab, setActiveTab] = useState<'matching' | 'members' | 'requests'>('matching');
+   const [partnerModalMember, setPartnerModalMember] = useState<CommunityMember | null>(null);
+   const [proposedDate, setProposedDate] = useState('');
+   const [partnerNote, setPartnerNote] = useState('');
+@@ -52,6 +60,11 @@ export function Community({
+     [requests],
+   );
+ 
++  // Compute smart match recommendations
++  const matchRecommendations = useMemo(() => {
++    return getMatchRecommendations(myProfile, members);
++  }, [myProfile, members]);
++
+   const filteredMembers = useMemo(() => {
+     return members.filter((member) => {
+       if (searchTerm) {
+@@ -93,14 +106,26 @@ export function Community({
+     <>
+       <PageHeading
+         eyebrow="DHBW BAD MERGENTHEIM"
+-        title="Gym Community"
+-        description="Finde Trainingspartner, verabrede dich zu gemeinsamen Sessions und tausche dich über Ziele aus."
++        title="Gym Community & Partner-Matching"
++        description="Finde passende Trainingspartner per KI-Matching, tausche dich im Direkt-Chat aus und trainiere gemeinsam."
+       />
+ 
+       {error && <InlineNotice tone="error">{error}</InlineNotice>}
+ 
+       {/* Community Segment Controls */}
+       <div className="community-subnav" role="tablist" aria-label="Community-Ansichten">
++        <button
++          type="button"
++          role="tab"
++          aria-selected={activeTab === 'matching'}
++          className={`community-tab-button ${activeTab === 'matching' ? 'is-active' : ''}`}
++          onClick={() => setActiveTab('matching')}
++        >
++          <Sparkles size={17} className="text-cyan-400" aria-hidden="true" />
++          <span>Smart Matching</span>
++          <span className="badge-highlight">Neu</span>
++        </button>
++
+         <button
+           type="button"
+           role="tab"
+@@ -109,8 +134,9 @@ export function Community({
+           onClick={() => setActiveTab('members')}
+         >
+           <Users size={17} aria-hidden="true" />
+-          <span>Mitglieder & Buddies ({members.length})</span>
++          <span>Alle Mitglieder ({members.length})</span>
+         </button>
++
+         <button
+           type="button"
+           role="tab"
+@@ -128,6 +154,126 @@ export function Community({
+         </button>
+       </div>
+ 
++      {/* 1. SMART MATCHING TAB */}
++      {activeTab === 'matching' && (
++        <section className="matching-panel">
++          <div className="surface matching-hero-card">
++            <div className="flex items-start justify-between gap-4">
++              <div>
++                <span className="eyebrow flex items-center gap-1.5 text-cyan-400 font-semibold">
++                  <Sparkles size={14} /> AUTOMATISCHE EMPFEHLUNGEN
++                </span>
++                <h2 className="text-lg font-bold text-slate-100 mt-1">
++                  Deine Top-Matches für das DHBW Gym
++                </h2>
++                <p className="text-sm text-slate-300 mt-1">
++                  Der Algorithmus analysiert deine Trainingsziele, präferierte Uhrzeiten, Studiengang und
++                  aktuelle Gym-Anwesenheit für maximale Synergie.
++                </p>
++              </div>
++
++              {!myProfile?.trainingGoals?.length && (
++                <button
++                  type="button"
++                  className="button button-secondary compact-button whitespace-nowrap"
++                  onClick={onNavigateToProfile}
++                >
++                  Profil vervollständigen
++                </button>
++              )}
++            </div>
++          </div>
++
++          <div className="community-members-grid mt-5">
++            {matchRecommendations.length === 0 ? (
++              <EmptyState
++                title="Keine Empfehlungen verfügbar"
++                description="Es sind noch keine weiteren öffentlichen Profile registriert. Lade deine Kommilitonen ein!"
++              />
++            ) : (
++              matchRecommendations.map(({ member, score, reasons, sameStudy }) => {
++                const initials = `${member.firstName[0] || ''}${member.lastNameInitial || ''}`;
++                const matchToneClass =
++                  score >= 85 ? 'match-high' : score >= 65 ? 'match-medium' : 'match-moderate';
++
++                return (
++                  <article key={member.id} className="surface member-card matching-card">
++                    {/* Top Match Badge */}
++                    <div className="flex items-center justify-between mb-2">
++                      <span className={`matching-score-pill ${matchToneClass}`}>
++                        <Flame size={13} aria-hidden="true" />
++                        <span>{score}% Match</span>
++                      </span>
++
++                      {member.activeNow && (
++                        <span className="status-live-pill">
++                          <span className="live-dot" aria-hidden="true" />
++                          <span>Jetzt im Gym</span>
++                        </span>
++                      )}
++                    </div>
++
++                    <div className="member-card-header">
++                      <div className="member-avatar" aria-hidden="true">
++                        {initials}
++                      </div>
++                      <div className="member-info">
++                        <h3 className="member-name">
++                          {member.firstName} {member.lastNameInitial ? `${member.lastNameInitial}.` : ''}
++                        </h3>
++                        <p className="member-study">{member.courseOfStudy || 'DHBW Bad Mergentheim'}</p>
++                      </div>
++                    </div>
++
++                    {/* Match Reasons List */}
++                    <div className="matching-reasons-box">
++                      <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
++                        Übereinstimmung:
++                      </span>
++                      <ul className="matching-reasons-list">
++                        {reasons.map((r, i) => (
++                          <li key={i} className="matching-reason-item">
++                            <Check size={12} className="text-cyan-400 flex-shrink-0" />
++                            <span>{r}</span>
++                          </li>
++                        ))}
++                      </ul>
++                    </div>
++
++                    {member.bio && <p className="member-bio mt-2">"{member.bio}"</p>}
++
++                    {/* Action buttons: Partner anfragen + Direkt-Chat */}
++                    <div className="member-card-footer dual-actions mt-4">
++                      <button
++                        type="button"
++                        className="button button-secondary compact-button flex-1"
++                        onClick={() => onOpenChat?.(member)}
++                        title="Direkt-Nachricht senden"
++                      >
++                        <MessageSquare size={15} aria-hidden="true" />
++                        <span>Chat</span>
++                      </button>
++
++                      <button
++                        type="button"
++                        className="button button-primary compact-button flex-1"
++                        disabled={!online || busy}
++                        onClick={() => setPartnerModalMember(member)}
++                        title="Trainingspartner anfragen"
++                      >
++                        <UserPlus size={15} aria-hidden="true" />
++                        <span>Anfragen</span>
++                      </button>
++                    </div>
++                  </article>
++                );
++              })
++            )}
++          </div>
++        </section>
++      )}
++
++      {/* 2. REQUESTS TAB */}
+       {activeTab === 'requests' && (
+         <section className="surface community-requests-panel">
+           <SectionTitle title="Deine Trainingspartner-Anfragen" />
+@@ -164,30 +310,57 @@ export function Community({
+                           )}
+                           {req.note && <p className="request-note">"{req.note}"</p>}
+                         </div>
+-                        {req.status === 'pending' && (
+-                          <div className="request-actions">
++
++                        <div className="request-actions">
++                          {req.status === 'pending' ? (
++                            <>
++                              <button
++                                type="button"
++                                className="button button-primary compact-button"
++                                disabled={busy || !online}
++                                onClick={() => void onRespondRequest(req.id, 'accepted')}
++                                title="Anfrage annehmen"
++                              >
++                                <Check size={15} aria-hidden="true" />
++                                <span>Annehmen</span>
++                              </button>
++                              <button
++                                type="button"
++                                className="button button-secondary compact-button"
++                                disabled={busy || !online}
++                                onClick={() => void onRespondRequest(req.id, 'declined')}
++                                title="Anfrage ablehnen"
++                              >
++                                <X size={15} aria-hidden="true" />
++                                <span>Ablehnen</span>
++                              </button>
++                            </>
++                          ) : req.status === 'accepted' ? (
+                             <button
+                               type="button"
+                               className="button button-primary compact-button"
+-                              disabled={busy || !online}
+-                              onClick={() => void onRespondRequest(req.id, 'accepted')}
+-                              title="Anfrage annehmen"
++                              onClick={() => {
++                                onOpenChat?.({
++                                  id: req.senderId,
++                                  firstName: req.senderName.split(' ')[0] || req.senderName,
++                                  lastNameInitial: req.senderName.split(' ')[1]?.replace('.', '') || '',
++                                  courseOfStudy: 'DHBW Bad Mergentheim',
++                                  trainingGoals: [],
++                                  preferredTimes: [],
++                                  interests: [],
++                                  bio: '',
++                                  isPublicPresence: true,
++                                  activeNow: false,
++                                  plannedNext: null,
++                                  isSelf: false,
++                                });
++                              }}
+                             >
+-                              <Check size={15} aria-hidden="true" />
+-                              <span>Annehmen</span>
++                              <MessageSquare size={14} />
++                              <span>Chat öffnen</span>
+                             </button>
+-                            <button
+-                              type="button"
+-                              className="button button-secondary compact-button"
+-                              disabled={busy || !online}
+-                              onClick={() => void onRespondRequest(req.id, 'declined')}
+-                              title="Anfrage ablehnen"
+-                            >
+-                              <X size={15} aria-hidden="true" />
+-                              <span>Ablehnen</span>
+-                            </button>
+-                          </div>
+-                        )}
++                          ) : null}
++                        </div>
+                       </li>
+                     ))}
+                 </ul>
+@@ -222,16 +395,44 @@ export function Community({
+                           )}
+                           {req.note && <p className="request-note">"{req.note}"</p>}
+                         </div>
+-                        {req.status === 'pending' && (
+-                          <button
+-                            type="button"
+-                            className="button button-secondary compact-button"
+-                            disabled={busy || !online}
+-                            onClick={() => void onRespondRequest(req.id, 'cancelled')}
+-                          >
+-                            Zurückziehen
+-                          </button>
+-                        )}
++
++                        <div className="request-actions">
++                          {req.status === 'pending' && (
++                            <button
++                              type="button"
++                              className="button button-secondary compact-button"
++                              disabled={busy || !online}
++                              onClick={() => void onRespondRequest(req.id, 'cancelled')}
++                            >
++                              Zurückziehen
++                            </button>
++                          )}
++                          {req.status === 'accepted' && (
++                            <button
++                              type="button"
++                              className="button button-primary compact-button"
++                              onClick={() => {
++                                onOpenChat?.({
++                                  id: req.receiverId,
++                                  firstName: req.receiverName.split(' ')[0] || req.receiverName,
++                                  lastNameInitial: req.receiverName.split(' ')[1]?.replace('.', '') || '',
++                                  courseOfStudy: 'DHBW Bad Mergentheim',
++                                  trainingGoals: [],
++                                  preferredTimes: [],
++                                  interests: [],
++                                  bio: '',
++                                  isPublicPresence: true,
++                                  activeNow: false,
++                                  plannedNext: null,
++                                  isSelf: false,
++                                });
++                              }}
++                            >
++                              <MessageSquare size={14} />
++                              <span>Chat öffnen</span>
++                            </button>
++                          )}
++                        </div>
+                       </li>
+                     ))}
+                 </ul>
+@@ -241,6 +442,7 @@ export function Community({
+         </section>
+       )}
+ 
++      {/* 3. ALL MEMBERS TAB */}
+       {activeTab === 'members' && (
+         <>
+           {/* Search & Filters */}
+@@ -382,15 +584,25 @@ export function Community({
+                           Dein Profil anpassen
+                         </button>
+                       ) : (
+-                        <button
+-                          type="button"
+-                          className="button button-primary full-width"
+-                          disabled={!online || busy}
+-                          onClick={() => setPartnerModalMember(member)}
+-                        >
+-                          <UserPlus size={16} aria-hidden="true" />
+-                          <span>Partner-Anfrage</span>
+-                        </button>
++                        <div className="flex items-center gap-2 w-full">
++                          <button
++                            type="button"
++                            className="button button-secondary compact-button"
++                            onClick={() => onOpenChat?.(member)}
++                            title="Chat öffnen"
++                          >
++                            <MessageSquare size={15} />
++                          </button>
++                          <button
++                            type="button"
++                            className="button button-primary compact-button flex-1"
++                            disabled={!online || busy}
++                            onClick={() => setPartnerModalMember(member)}
++                          >
++                            <UserPlus size={15} aria-hidden="true" />
++                            <span>Partner-Anfrage</span>
++                          </button>
++                        </div>
+                       )}
+                     </div>
+                   </article>
+@@ -435,7 +647,7 @@ export function Community({
+                 />
+               </Field>
+ 
+-              <Field label="Nachricht / Fokus">
++              <Field label="Nachricht / Trainingsfokus">
+                 <textarea
+                   className="text-input"
+                   rows={3}
+diff --git a/src/features/gym/GymApp.tsx b/src/features/gym/GymApp.tsx
+index f545833..4369e08 100644
+--- a/src/features/gym/GymApp.tsx
++++ b/src/features/gym/GymApp.tsx
+@@ -1,4 +1,4 @@
+-import { useCallback, useEffect, useState } from 'react';
++import { useCallback, useEffect, useMemo, useState } from 'react';
+ import {
+   GymApiError,
+   gymRepository,
+@@ -16,6 +16,16 @@ import {
+   type TrainingPartnerRequest,
+   type WorkoutLog,
+ } from '../../services/gymRepository';
++import { loginWithGoogle, subscribeToAuth } from '../../services/firebase';
++import {
++  subscribeToConversations,
++  subscribeToNotifications,
++  sendNotification,
++  markNotificationAsRead,
++  markAllNotificationsAsRead,
++  type CloudConversation,
++  type CloudNotification,
++} from '../../services/communityChatService';
+ import { AppFrame, InlineNotice, type GymPage } from './components';
+ import { Dashboard } from './Dashboard';
+ import { Calendar } from './Calendar';
+@@ -23,6 +33,9 @@ import { Community } from './Community';
+ import { Training } from './Training';
+ import { Progress } from './Progress';
+ import { Profile } from './Profile';
++import { NotificationCenter } from './NotificationCenter';
++import { ChatDrawer } from './ChatDrawer';
++import { MessageSquare } from 'lucide-react';
+ import './gym.css';
+ 
+ export function GymApp() {
+@@ -50,6 +63,41 @@ export function GymApp() {
+   const [communityMembers, setCommunityMembers] = useState<CommunityMember[]>([]);
+   const [partnerRequests, setPartnerRequests] = useState<TrainingPartnerRequest[]>([]);
+ 
++  // Cloud Chat & Notifications states
++  const [firebaseUserId, setFirebaseUserId] = useState<string>('');
++  const [conversations, setConversations] = useState<CloudConversation[]>([]);
++  const [notifications, setNotifications] = useState<CloudNotification[]>([]);
++  const [localNotifications, setLocalNotifications] = useState<CloudNotification[]>([]);
++  const [isChatOpen, setIsChatOpen] = useState(false);
++  const [activeChatPartner, setActiveChatPartner] = useState<CommunityMember | null>(null);
++
++  const activeNotifications = useMemo(() => {
++    return firebaseUserId ? notifications : localNotifications;
++  }, [firebaseUserId, notifications, localNotifications]);
++
++  // Initialize Firebase Auth & observe authentication state
++  useEffect(() => {
++    const unsub = subscribeToAuth((user) => {
++      setFirebaseUserId(user ? user.uid : '');
++    });
++    return () => unsub();
++  }, []);
++
++  // Subscribe to real-time conversations & notifications in Firestore ONLY when Firebase Auth is ready
++  useEffect(() => {
++    if (!firebaseUserId) return;
++    const unsubConv = subscribeToConversations(firebaseUserId, (items) => {
++      setConversations(items);
++    });
++    const unsubNotif = subscribeToNotifications(firebaseUserId, (items) => {
++      setNotifications(items);
++    });
++    return () => {
++      unsubConv();
++      unsubNotif();
++    };
++  }, [firebaseUserId]);
++
+   const refreshAll = useCallback(async () => {
+     try {
+       const currentSession = await gymRepository.getSession();
+@@ -139,6 +187,31 @@ export function GymApp() {
+     return () => window.clearTimeout(timer);
+   }, [toast]);
+ 
++  // Automatic Slot-Reminder Check: If upcoming booking in next 2 hours
++  useEffect(() => {
++    if (!firebaseUserId || bookings.length === 0) return;
++    const now = Date.now();
++    const upcoming = bookings.find((b) => {
++      const startMs = new Date(b.startsAt).getTime();
++      const diffMinutes = (startMs - now) / (1000 * 60);
++      return diffMinutes > 0 && diffMinutes <= 120;
++    });
++
++    if (upcoming) {
++      const existingReminder = notifications.some(
++        (n) => n.type === 'slot_reminder' && n.message.includes(upcoming.title || 'Training'),
++      );
++      if (!existingReminder) {
++        void sendNotification(firebaseUserId, {
++          type: 'slot_reminder',
++          title: '⏰ Erinnerung: Dein Gym-Slot beginnt bald!',
++          message: `Dein geplantes Training "${upcoming.title || 'Workout'}" startet in Kürze.`,
++          linkUrl: '/calendar',
++        }).catch(() => undefined);
++      }
++    }
++  }, [bookings, firebaseUserId, notifications]);
++
+   const runMutation = useCallback(
+     async (operation: () => Promise<void>, successMessage: string) => {
+       setBusy(true);
+@@ -170,10 +243,19 @@ export function GymApp() {
+       runMutation(
+         async () => {
+           await gymRepository.createBooking(input);
++          // Create a reminder notification
++          if (firebaseUserId) {
++            void sendNotification(firebaseUserId, {
++              type: 'slot_reminder',
++              title: 'Gym-Slot eingetragen',
++              message: `Deine Trainingszeit für ${new Date(input.startsAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} Uhr wurde reserviert.`,
++              linkUrl: '/calendar',
++            }).catch(() => undefined);
++          }
+         },
+         input.entryType === 'reservation' ? 'Deine Trainingszeit wurde reserviert.' : 'Geplante Anwesenheit eingetragen.',
+       ),
+-    [runMutation],
++    [firebaseUserId, runMutation],
+   );
+ 
+   const handleDeleteBooking = useCallback(
+@@ -246,6 +328,18 @@ export function GymApp() {
+       setError(null);
+       try {
+         await gymRepository.sendPartnerRequest(receiverId, note, proposedDate);
++
++        // Send real-time cloud notification to receiver
++        const myName = communityProfile?.firstName
++          ? `${communityProfile.firstName} ${communityProfile.lastNameInitial}.`
++          : 'Ein Kommilitone';
++        void sendNotification(receiverId, {
++          type: 'partner_request',
++          title: 'Neue Partner-Anfrage!',
++          message: `${myName} möchte mit dir im DHBW Gym trainieren.`,
++          linkUrl: '/community',
++        }).catch(() => undefined);
++
+         await refreshAll();
+         setToast('Trainingspartner-Anfrage gesendet.');
+       } catch (caught) {
+@@ -254,7 +348,7 @@ export function GymApp() {
+         setBusy(false);
+       }
+     },
+-    [refreshAll],
++    [communityProfile, refreshAll],
+   );
+ 
+   const handleRespondPartnerRequest = useCallback(
+@@ -263,6 +357,23 @@ export function GymApp() {
+       setError(null);
+       try {
+         await gymRepository.respondToPartnerRequest(id, status);
++
++        // If accepted, notify sender via Cloud Notification
++        if (status === 'accepted') {
++          const req = partnerRequests.find((r) => r.id === id);
++          if (req) {
++            const myName = communityProfile?.firstName
++              ? `${communityProfile.firstName} ${communityProfile.lastNameInitial}.`
++              : 'Dein Trainingspartner';
++            void sendNotification(req.senderId, {
++              type: 'partner_accepted',
++              title: 'Partner-Anfrage angenommen! 🎉',
++              message: `${myName} hat deine Anfrage angenommen. Schreib direkt eine Nachricht im Chat!`,
++              linkUrl: '/community',
++            }).catch(() => undefined);
++          }
++        }
++
+         await refreshAll();
+         setToast(
+           status === 'accepted'
+@@ -277,9 +388,47 @@ export function GymApp() {
+         setBusy(false);
+       }
+     },
+-    [refreshAll],
++    [communityProfile, partnerRequests, refreshAll],
+   );
+ 
++  const handleTriggerTestSlotReminder = useCallback(async () => {
++    if (firebaseUserId) {
++      await sendNotification(firebaseUserId, {
++        type: 'slot_reminder',
++        title: '⏰ Erinnerung: Gym-Slot in 30 Minuten!',
++        message: 'Dein gebuchter Trainings-Slot im DHBW Gym Campus Bad Mergentheim beginnt gleich. Schnapp dir deine Trainingsschuhe!',
++        linkUrl: '/calendar',
++      });
++    } else {
++      const mockNotif: CloudNotification = {
++        id: `notif_${Date.now()}`,
++        userId: 'local_user',
++        type: 'slot_reminder',
++        title: '⏰ Erinnerung: Gym-Slot in 30 Minuten!',
++        message: 'Dein gebuchter Trainings-Slot im DHBW Gym Campus Bad Mergentheim beginnt gleich. Schnapp dir deine Trainingsschuhe!',
++        read: false,
++        linkUrl: '/calendar',
++        createdAt: new Date().toISOString(),
++      };
++      setLocalNotifications((prev) => [mockNotif, ...prev]);
++    }
++    setToast('Slot-Erinnerung simuliert!');
++  }, [firebaseUserId]);
++
++  const handleGoogleLogin = useCallback(async () => {
++    try {
++      await loginWithGoogle();
++      setToast('Erfolgreich mit Google angemeldet. Cloud-Sync aktiv!');
++    } catch (caught) {
++      console.warn('Google login failed or closed:', caught);
++    }
++  }, []);
++
++  const handleOpenChat = useCallback((member: CommunityMember) => {
++    setActiveChatPartner(member);
++    setIsChatOpen(true);
++  }, []);
++
+   const handleRegister = useCallback(
+     async (data: { email: string; password: string; firstName?: string; lastNameInitial?: string; courseOfStudy?: string }) => {
+       setBusy(true);
+@@ -375,7 +524,50 @@ export function GymApp() {
+   }
+ 
+   return (
+-    <AppFrame page={page} onNavigate={setPage}>
++    <AppFrame
++      page={page}
++      onNavigate={setPage}
++      headerActions={
++        <NotificationCenter
++          notifications={activeNotifications}
++          isCloudConnected={Boolean(firebaseUserId)}
++          onLoginWithGoogle={handleGoogleLogin}
++          onMarkRead={(id) => {
++            if (firebaseUserId) {
++              void markNotificationAsRead(firebaseUserId, id);
++            } else {
++              setLocalNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
++            }
++          }}
++          onMarkAllRead={() => {
++            if (firebaseUserId) {
++              void markAllNotificationsAsRead(firebaseUserId, notifications);
++            } else {
++              setLocalNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
++            }
++          }}
++          onTriggerTestSlotReminder={handleTriggerTestSlotReminder}
++          onNavigate={setPage}
++          onOpenChat={(pId, pName) => {
++            const found = communityMembers.find((m) => m.id === pId) || {
++              id: pId,
++              firstName: pName.split(' ')[0] || pName,
++              lastNameInitial: pName.split(' ')[1]?.replace('.', '') || '',
++              courseOfStudy: 'DHBW Bad Mergentheim',
++              trainingGoals: [],
++              preferredTimes: [],
++              interests: [],
++              bio: '',
++              isPublicPresence: true,
++              activeNow: false,
++              plannedNext: null,
++              isSelf: false,
++            };
++            handleOpenChat(found);
++          }}
++        />
++      }
++    >
+       {!online && (
+         <InlineNotice tone="warning">
+           Der Gym-Server ist nicht erreichbar. Angezeigte Daten können veraltet sein; Check-in,
+@@ -430,6 +622,7 @@ export function GymApp() {
+           onSendRequest={handleSendPartnerRequest}
+           onRespondRequest={handleRespondPartnerRequest}
+           onNavigateToProfile={() => setPage('profile')}
++          onOpenChat={handleOpenChat}
+         />
+       )}
+ 
+@@ -472,9 +665,41 @@ export function GymApp() {
+         />
+       )}
+ 
++      {/* Floating Messenger Button */}
++      {!isChatOpen && (
++        <button
++          type="button"
++          className="floating-chat-trigger"
++          onClick={() => setIsChatOpen(true)}
++          aria-label="Gym Chat öffnen"
++        >
++          <MessageSquare size={17} />
++          <span>Chat</span>
++          {conversations.length > 0 && (
++            <span className="badge-count">{conversations.length}</span>
++          )}
++        </button>
++      )}
++
++      {/* Integrated Real-Time Chat Drawer */}
++      <ChatDrawer
++        isOpen={isChatOpen}
++        onClose={() => setIsChatOpen(false)}
++        currentUserId={firebaseUserId}
++        currentUserName={
++          communityProfile?.firstName
++            ? `${communityProfile.firstName} ${communityProfile.lastNameInitial ? `${communityProfile.lastNameInitial}.` : ''}`
++            : 'Du'
++        }
++        activePartner={activeChatPartner}
++        conversations={conversations}
++        onSelectPartner={setActiveChatPartner}
++        onLoginWithGoogle={handleGoogleLogin}
++      />
++
+       <footer className="gym-footer">
+         <span>DHBW Bad Mergentheim · Campus-Gym Community</span>
+-        <span>Smart-Polling alle 15 Sekunden aktiv</span>
++        <span>Smart-Polling alle 15 Sekunden aktiv · Cloud-Sync bereit</span>
+       </footer>
+ 
+       <div className="toast-region" aria-live="polite" aria-atomic="true">
+diff --git a/src/features/gym/NotificationCenter.tsx b/src/features/gym/NotificationCenter.tsx
+new file mode 100644
+index 0000000..9a0cb61
+--- /dev/null
++++ b/src/features/gym/NotificationCenter.tsx
+@@ -0,0 +1,190 @@
++import { useEffect, useRef, useState } from 'react';
++import {
++  Bell,
++  Calendar,
++  CheckCheck,
++  Dumbbell,
++  MessageSquare,
++  Sparkles,
++  UserCheck,
++  X,
++} from 'lucide-react';
++import type { CloudNotification } from '../../services/communityChatService';
++import type { GymPage } from './components';
++
++export function NotificationCenter({
++  notifications,
++  isCloudConnected = false,
++  onLoginWithGoogle,
++  onMarkRead,
++  onMarkAllRead,
++  onTriggerTestSlotReminder,
++  onNavigate,
++  onOpenChat,
++}: {
++  notifications: CloudNotification[];
++  isCloudConnected?: boolean;
++  onLoginWithGoogle?: () => void;
++  onMarkRead: (id: string) => void;
++  onMarkAllRead: () => void;
++  onTriggerTestSlotReminder: () => void;
++  onNavigate: (page: GymPage) => void;
++  onOpenChat?: (partnerId: string, partnerName: string) => void;
++}) {
++  const [isOpen, setIsOpen] = useState(false);
++  const containerRef = useRef<HTMLDivElement>(null);
++
++  const unreadCount = notifications.filter((n) => !n.read).length;
++
++  useEffect(() => {
++    function handleClickOutside(e: MouseEvent) {
++      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
++        setIsOpen(false);
++      }
++    }
++    if (isOpen) {
++      document.addEventListener('mousedown', handleClickOutside);
++    }
++    return () => document.removeEventListener('mousedown', handleClickOutside);
++  }, [isOpen]);
++
++  const handleAction = (n: CloudNotification) => {
++    onMarkRead(n.id);
++    setIsOpen(false);
++    if (n.type === 'partner_request' || n.type === 'partner_accepted') {
++      onNavigate('community');
++    } else if (n.type === 'slot_reminder') {
++      onNavigate('calendar');
++    } else if (n.type === 'new_message') {
++      onNavigate('community');
++    }
++  };
++
++  return (
++    <div className="relative inline-block" ref={containerRef}>
++      <button
++        type="button"
++        className="notification-trigger-button"
++        onClick={() => setIsOpen((prev) => !prev)}
++        aria-label={`Benachrichtigungen (${unreadCount} ungelesen)`}
++        title="Benachrichtigungen & Slot-Erinnerungen"
++      >
++        <Bell size={18} aria-hidden="true" />
++        {unreadCount > 0 && (
++          <span className="notification-badge" aria-hidden="true">
++            {unreadCount > 9 ? '9+' : unreadCount}
++          </span>
++        )}
++      </button>
++
++      {isOpen && (
++        <div className="surface notification-popover" role="dialog" aria-label="Benachrichtigungscenter">
++          <div className="notification-header">
++            <div className="flex items-center gap-2">
++              <span className="font-semibold text-slate-100 text-sm">Benachrichtigungen</span>
++              {unreadCount > 0 && (
++                <span className="notification-pill-count">{unreadCount} neu</span>
++              )}
++            </div>
++            <div className="flex items-center gap-1">
++              {unreadCount > 0 && (
++                <button
++                  type="button"
++                  className="notification-header-action"
++                  onClick={onMarkAllRead}
++                  title="Alle als gelesen markieren"
++                >
++                  <CheckCheck size={14} />
++                  <span>Alle lesen</span>
++                </button>
++              )}
++              <button
++                type="button"
++                className="icon-button"
++                onClick={() => setIsOpen(false)}
++                aria-label="Schließen"
++              >
++                <X size={15} />
++              </button>
++            </div>
++          </div>
++
++          {!isCloudConnected && onLoginWithGoogle && (
++            <div className="notification-cloud-banner">
++              <span>Cloud-Sync inaktiv</span>
++              <button
++                type="button"
++                className="cloud-login-btn"
++                onClick={onLoginWithGoogle}
++              >
++                Mit Google anmelden
++              </button>
++            </div>
++          )}
++
++          {/* Quick Slot Test Action */}
++          <div className="notification-quick-test">
++            <button
++              type="button"
++              className="test-reminder-button"
++              onClick={() => {
++                onTriggerTestSlotReminder();
++              }}
++            >
++              <Sparkles size={13} className="text-amber-400" />
++              <span>Slot-Erinnerung simulieren</span>
++            </button>
++          </div>
++
++          <div className="notification-list">
++            {notifications.length === 0 ? (
++              <div className="p-5 text-center text-xs text-slate-400">
++                <Dumbbell size={24} className="mx-auto mb-2 text-slate-500 opacity-60" />
++                <p>Keine neuen Benachrichtigungen.</p>
++                <p className="mt-1 text-slate-500 text-[11px]">
++                  Hier erhältst du Updates zu Partner-Anfragen, Chat-Nachrichten und Slot-Erinnerungen.
++                </p>
++              </div>
++            ) : (
++              notifications.map((n) => {
++                const icon =
++                  n.type === 'slot_reminder' ? (
++                    <Calendar size={15} className="text-cyan-400" />
++                  ) : n.type === 'new_message' ? (
++                    <MessageSquare size={15} className="text-emerald-400" />
++                  ) : n.type === 'partner_accepted' ? (
++                    <UserCheck size={15} className="text-violet-400" />
++                  ) : (
++                    <Bell size={15} className="text-amber-400" />
++                  );
++
++                return (
++                  <div
++                    key={n.id}
++                    className={`notification-item ${n.read ? 'is-read' : 'is-unread'}`}
++                    onClick={() => handleAction(n)}
++                  >
++                    <div className="notification-icon-wrapper">{icon}</div>
++                    <div className="notification-body">
++                      <div className="flex items-center justify-between gap-1">
++                        <strong className="notification-title">{n.title}</strong>
++                        {!n.read && <span className="notification-unread-dot" />}
++                      </div>
++                      <p className="notification-text">{n.message}</p>
++                      <span className="notification-time">
++                        {new Date(n.createdAt).toLocaleTimeString([], {
++                          hour: '2-digit',
++                          minute: '2-digit',
++                        })}
++                      </span>
++                    </div>
++                  </div>
++                );
++              })
++            )}
++          </div>
++        </div>
++      )}
++    </div>
++  );
++}
+diff --git a/src/features/gym/components.tsx b/src/features/gym/components.tsx
+index 7234805..daef8ec 100644
+--- a/src/features/gym/components.tsx
++++ b/src/features/gym/components.tsx
+@@ -12,9 +12,10 @@ const navigation: Array<{ id: GymPage; label: string; Icon: typeof House }> = [
+   { id: 'profile', label: 'Profil', Icon: UserRound },
+ ];
+ 
+-export function AppFrame({ page, onNavigate, children }: {
++export function AppFrame({ page, onNavigate, headerActions, children }: {
+   page: GymPage;
+   onNavigate: (page: GymPage) => void;
++  headerActions?: ReactNode;
+   children: ReactNode;
+ }) {
+   return (
+@@ -32,9 +33,12 @@ export function AppFrame({ page, onNavigate, children }: {
+             </button>
+           ))}
+         </nav>
+-        <button type="button" className="gym-profile-shortcut" onClick={() => onNavigate('profile')} aria-label="Profil und Datenschutz">
+-          <UserRound size={18} aria-hidden="true" />
+-        </button>
++        <div className="gym-header-actions flex items-center gap-2">
++          {headerActions}
++          <button type="button" className="gym-profile-shortcut" onClick={() => onNavigate('profile')} aria-label="Profil und Datenschutz">
++            <UserRound size={18} aria-hidden="true" />
++          </button>
++        </div>
+       </header>
+       <main className="gym-main">{children}</main>
+       <nav className="gym-mobile-nav" aria-label="Hauptnavigation">
+diff --git a/src/features/gym/gym.css b/src/features/gym/gym.css
+index e85150b..383ce12 100644
+--- a/src/features/gym/gym.css
++++ b/src/features/gym/gym.css
+@@ -2376,4 +2376,618 @@
+   }
+ }
+ 
++/* ==========================================================================
++   Smart Matching, Chat & Notification Center Styles
++   ========================================================================== */
++
++/* Notification Center */
++.notification-trigger-button {
++  position: relative;
++  display: flex;
++  align-items: center;
++  justify-content: center;
++  width: 38px;
++  height: 38px;
++  border-radius: 10px;
++  background: var(--gym-surface);
++  border: 1px solid var(--gym-border);
++  color: var(--gym-muted);
++  cursor: pointer;
++  transition: all 0.15s ease;
++}
++
++.notification-trigger-button:hover {
++  color: var(--gym-text);
++  border-color: var(--gym-accent);
++}
++
++.notification-badge {
++  position: absolute;
++  top: -4px;
++  right: -4px;
++  display: flex;
++  align-items: center;
++  justify-content: center;
++  min-width: 18px;
++  height: 18px;
++  padding: 0 4px;
++  border-radius: 999px;
++  background: #f43f5e;
++  color: #fff;
++  font-size: 10px;
++  font-weight: 700;
++  box-shadow: 0 0 8px rgba(244, 63, 94, 0.6);
++  border: 2px solid var(--gym-bg, #0b0f17);
++}
++
++.notification-popover {
++  position: absolute;
++  top: calc(100% + 8px);
++  right: 0;
++  width: 340px;
++  max-width: calc(100vw - 32px);
++  max-height: 480px;
++  display: flex;
++  flex-direction: column;
++  border-radius: 14px;
++  border: 1px solid var(--gym-border-strong);
++  background: #111827;
++  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.55);
++  z-index: 120;
++  overflow: hidden;
++}
++
++.notification-header {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  padding: 12px 14px;
++  border-bottom: 1px solid var(--gym-border);
++  background: rgba(255, 255, 255, 0.02);
++}
++
++.notification-pill-count {
++  font-size: 10px;
++  font-weight: 700;
++  padding: 2px 6px;
++  border-radius: 6px;
++  background: rgba(244, 63, 94, 0.15);
++  color: #fb7185;
++}
++
++.notification-header-action {
++  display: inline-flex;
++  align-items: center;
++  gap: 4px;
++  background: transparent;
++  border: none;
++  color: var(--gym-muted);
++  font-size: 11px;
++  cursor: pointer;
++  padding: 4px 6px;
++  border-radius: 6px;
++}
++
++.notification-header-action:hover {
++  color: var(--gym-text);
++  background: rgba(255, 255, 255, 0.05);
++}
++
++.notification-quick-test {
++  padding: 8px 12px;
++  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
++  background: rgba(6, 182, 212, 0.05);
++}
++
++.test-reminder-button {
++  display: inline-flex;
++  align-items: center;
++  gap: 6px;
++  width: 100%;
++  justify-content: center;
++  padding: 6px 10px;
++  border-radius: 8px;
++  background: rgba(255, 255, 255, 0.04);
++  border: 1px dashed rgba(6, 182, 212, 0.4);
++  color: #67e8f9;
++  font-size: 11px;
++  font-weight: 600;
++  cursor: pointer;
++  transition: all 0.15s ease;
++}
++
++.test-reminder-button:hover {
++  background: rgba(6, 182, 212, 0.12);
++  border-color: #06b6d4;
++}
++
++.notification-list {
++  display: flex;
++  flex-direction: column;
++  overflow-y: auto;
++  max-height: 360px;
++}
++
++.notification-item {
++  display: flex;
++  align-items: flex-start;
++  gap: 10px;
++  padding: 12px 14px;
++  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
++  cursor: pointer;
++  transition: background 0.15s ease;
++}
++
++.notification-item:hover {
++  background: rgba(255, 255, 255, 0.04);
++}
++
++.notification-item.is-unread {
++  background: rgba(59, 130, 246, 0.06);
++}
++
++.notification-icon-wrapper {
++  margin-top: 2px;
++  flex-shrink: 0;
++}
++
++.notification-body {
++  flex: 1;
++  min-width: 0;
++}
++
++.notification-title {
++  font-size: 12px;
++  color: var(--gym-text);
++  line-height: 1.3;
++}
++
++.notification-unread-dot {
++  width: 7px;
++  height: 7px;
++  border-radius: 999px;
++  background: #3b82f6;
++  flex-shrink: 0;
++}
++
++.notification-text {
++  font-size: 11px;
++  color: var(--gym-muted);
++  margin: 2px 0 4px;
++  line-height: 1.4;
++  overflow-wrap: anywhere;
++}
++
++.notification-time {
++  font-size: 10px;
++  color: var(--gym-dim);
++}
++
++/* Smart Matching Components */
++.matching-hero-card {
++  padding: 20px 24px;
++  border-radius: 16px;
++  background: linear-gradient(135deg, rgba(6, 182, 212, 0.08) 0%, rgba(59, 130, 246, 0.05) 100%);
++  border: 1px solid rgba(6, 182, 212, 0.25);
++  margin-bottom: 20px;
++}
++
++.matching-card {
++  position: relative;
++  display: flex;
++  flex-direction: column;
++  border: 1px solid var(--gym-border);
++  transition: all 0.2s ease;
++}
++
++.matching-card:hover {
++  border-color: rgba(6, 182, 212, 0.4);
++  transform: translateY(-2px);
++  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
++}
++
++.badge-highlight {
++  font-size: 9px;
++  font-weight: 800;
++  text-transform: uppercase;
++  padding: 2px 6px;
++  border-radius: 999px;
++  background: linear-gradient(135deg, #06b6d4, #3b82f6);
++  color: #fff;
++  letter-spacing: 0.05em;
++}
++
++.matching-score-pill {
++  display: inline-flex;
++  align-items: center;
++  gap: 5px;
++  padding: 4px 10px;
++  border-radius: 8px;
++  font-size: 12px;
++  font-weight: 700;
++}
++
++.matching-score-pill.match-high {
++  background: rgba(16, 185, 129, 0.15);
++  border: 1px solid rgba(16, 185, 129, 0.4);
++  color: #34d399;
++}
++
++.matching-score-pill.match-medium {
++  background: rgba(6, 182, 212, 0.15);
++  border: 1px solid rgba(6, 182, 212, 0.4);
++  color: #38bdf8;
++}
++
++.matching-score-pill.match-moderate {
++  background: rgba(245, 158, 11, 0.15);
++  border: 1px solid rgba(245, 158, 11, 0.4);
++  color: #fbbf24;
++}
++
++.matching-reasons-box {
++  background: rgba(0, 0, 0, 0.25);
++  border: 1px solid rgba(255, 255, 255, 0.05);
++  border-radius: 10px;
++  padding: 10px 12px;
++  margin-top: 10px;
++}
++
++.matching-reasons-list {
++  display: flex;
++  flex-direction: column;
++  gap: 5px;
++  margin-top: 6px;
++}
++
++.matching-reason-item {
++  display: flex;
++  align-items: center;
++  gap: 6px;
++  font-size: 11px;
++  color: var(--gym-text);
++}
++
++.dual-actions {
++  display: flex;
++  gap: 8px;
++  width: 100%;
++}
++
++/* Chat Drawer */
++.chat-drawer-container {
++  position: fixed;
++  bottom: 24px;
++  right: 24px;
++  width: 360px;
++  max-width: calc(100vw - 32px);
++  height: 520px;
++  max-height: calc(100vh - 100px);
++  display: flex;
++  flex-direction: column;
++  border-radius: 16px;
++  border: 1px solid var(--gym-border-strong);
++  background: #0f172a;
++  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.65);
++  z-index: 150;
++  overflow: hidden;
++  animation: slide-up 0.2s ease-out;
++}
++
++@keyframes slide-up {
++  from { opacity: 0; transform: translateY(16px); }
++  to { opacity: 1; transform: translateY(0); }
++}
++
++.chat-drawer-header {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  padding: 12px 16px;
++  border-bottom: 1px solid var(--gym-border);
++  background: rgba(255, 255, 255, 0.03);
++}
++
++.chat-header-avatar {
++  width: 34px;
++  height: 34px;
++  border-radius: 10px;
++  background: linear-gradient(135deg, #1e293b, #0f172a);
++  border: 1px solid #334155;
++  color: #38bdf8;
++  display: flex;
++  align-items: center;
++  justify-content: center;
++  font-weight: 700;
++  font-size: 13px;
++  flex-shrink: 0;
++}
++
++.chat-header-title {
++  font-size: 13px;
++  font-weight: 700;
++  color: var(--gym-text);
++  margin: 0;
++}
++
++.chat-header-subtitle {
++  font-size: 11px;
++  color: var(--gym-muted);
++  margin: 0;
++}
++
++.chat-conversations-list {
++  flex: 1;
++  display: flex;
++  flex-direction: column;
++  overflow-y: auto;
++}
++
++.chat-conv-items {
++  display: flex;
++  flex-direction: column;
++}
++
++.chat-conv-row {
++  display: flex;
++  align-items: center;
++  gap: 12px;
++  padding: 10px 14px;
++  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
++  cursor: pointer;
++  transition: background 0.15s ease;
++}
++
++.chat-conv-row:hover {
++  background: rgba(255, 255, 255, 0.05);
++}
++
++.chat-messages-area {
++  flex: 1;
++  display: flex;
++  flex-direction: column;
++  min-height: 0;
++}
++
++.chat-messages-scroll {
++  flex: 1;
++  overflow-y: auto;
++  padding: 14px;
++  display: flex;
++  flex-direction: column;
++  gap: 10px;
++}
++
++.chat-bubble-wrapper {
++  display: flex;
++  flex-direction: column;
++  max-width: 82%;
++}
++
++.chat-bubble-wrapper.is-self {
++  align-self: flex-end;
++  align-items: flex-end;
++}
++
++.chat-bubble-wrapper.is-partner {
++  align-self: flex-start;
++  align-items: flex-start;
++}
++
++.chat-bubble-sender {
++  font-size: 10px;
++  color: var(--gym-muted);
++  margin-bottom: 2px;
++  padding-left: 4px;
++}
++
++.chat-bubble {
++  padding: 8px 12px;
++  border-radius: 12px;
++  font-size: 13px;
++  line-height: 1.45;
++  word-break: break-word;
++}
++
++.bubble-self {
++  background: #2563eb;
++  color: #fff;
++  border-bottom-right-radius: 3px;
++}
++
++.bubble-partner {
++  background: #1e293b;
++  color: var(--gym-text);
++  border: 1px solid #334155;
++  border-bottom-left-radius: 3px;
++}
++
++.chat-bubble-time {
++  display: block;
++  font-size: 9px;
++  opacity: 0.7;
++  text-align: right;
++  margin-top: 3px;
++}
++
++.chat-quick-prompts {
++  display: flex;
++  overflow-x: auto;
++  gap: 6px;
++  padding: 6px 12px;
++  border-top: 1px solid rgba(255, 255, 255, 0.04);
++  background: rgba(0, 0, 0, 0.2);
++  scrollbar-width: none;
++}
++
++.chat-quick-prompts::-webkit-scrollbar {
++  display: none;
++}
++
++.chat-prompt-chip {
++  flex-shrink: 0;
++  padding: 4px 8px;
++  border-radius: 999px;
++  background: rgba(255, 255, 255, 0.06);
++  border: 1px solid rgba(255, 255, 255, 0.1);
++  color: var(--gym-muted);
++  font-size: 11px;
++  cursor: pointer;
++  white-space: nowrap;
++  transition: all 0.15s ease;
++}
++
++.chat-prompt-chip:hover:not(:disabled) {
++  color: var(--gym-text);
++  background: rgba(59, 130, 246, 0.15);
++  border-color: #3b82f6;
++}
++
++.chat-input-bar {
++  display: flex;
++  align-items: center;
++  gap: 8px;
++  padding: 10px 12px;
++  border-top: 1px solid var(--gym-border);
++  background: rgba(255, 255, 255, 0.02);
++}
++
++.chat-text-input {
++  flex: 1;
++  background: rgba(0, 0, 0, 0.3);
++  border: 1px solid var(--gym-border);
++  border-radius: 10px;
++  padding: 8px 12px;
++  color: var(--gym-text);
++  font-size: 13px;
++  outline: none;
++}
++
++.chat-text-input:focus {
++  border-color: var(--gym-accent);
++}
++
++.chat-send-button {
++  display: flex;
++  align-items: center;
++  justify-content: center;
++  width: 36px;
++  height: 36px;
++  border-radius: 10px;
++  background: #2563eb;
++  border: none;
++  color: #fff;
++  cursor: pointer;
++  transition: background 0.15s ease;
++  flex-shrink: 0;
++}
++
++.chat-send-button:hover:not(:disabled) {
++  background: #1d4ed8;
++}
++
++.chat-send-button:disabled {
++  opacity: 0.4;
++  cursor: not-allowed;
++}
++
++/* Floating Messenger Trigger (FAB) */
++.floating-chat-trigger {
++  position: fixed;
++  bottom: 24px;
++  right: 24px;
++  display: flex;
++  align-items: center;
++  gap: 8px;
++  padding: 10px 16px;
++  border-radius: 999px;
++  background: linear-gradient(135deg, #2563eb, #0891b2);
++  border: 1px solid rgba(255, 255, 255, 0.2);
++  color: #fff;
++  font-size: 13px;
++  font-weight: 700;
++  cursor: pointer;
++  box-shadow: 0 10px 25px rgba(37, 99, 235, 0.45);
++  z-index: 100;
++  transition: all 0.2s ease;
++}
++
++.floating-chat-trigger:hover {
++  transform: translateY(-2px) scale(1.03);
++  box-shadow: 0 14px 30px rgba(37, 99, 235, 0.6);
++}
++
++@media (max-width: 600px) {
++  .chat-drawer-container {
++    bottom: 74px;
++    right: 12px;
++    width: calc(100vw - 24px);
++    height: 480px;
++  }
++
++  .floating-chat-trigger {
++    bottom: 74px;
++    right: 16px;
++  }
++}
++
++.notification-cloud-banner {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: 8px;
++  padding: 8px 12px;
++  background: rgba(6, 182, 212, 0.08);
++  border-bottom: 1px solid rgba(6, 182, 212, 0.2);
++  font-size: 11px;
++  color: #a5f3fc;
++}
++
++.cloud-login-btn {
++  padding: 4px 10px;
++  border-radius: 6px;
++  background: #2563eb;
++  border: none;
++  color: #fff;
++  font-size: 11px;
++  font-weight: 600;
++  cursor: pointer;
++  transition: background 0.15s ease;
++}
++
++.cloud-login-btn:hover {
++  background: #1d4ed8;
++}
++
++.chat-login-prompt {
++  display: flex;
++  flex-direction: column;
++  align-items: center;
++  justify-content: center;
++  text-align: center;
++  padding: 32px 20px;
++  margin: auto;
++}
++
++.chat-login-icon {
++  color: #38bdf8;
++  margin-bottom: 12px;
++  opacity: 0.85;
++}
++
++.chat-login-title {
++  font-size: 14px;
++  font-weight: 700;
++  color: var(--gym-text);
++  margin: 0;
++}
++
++.chat-login-desc {
++  font-size: 12px;
++  color: var(--gym-muted);
++  max-width: 240px;
++  margin: 6px 0 0;
++  line-height: 1.5;
++}
++
+ 
+diff --git a/src/services/communityChatService.ts b/src/services/communityChatService.ts
+new file mode 100644
+index 0000000..1b89a1c
+--- /dev/null
++++ b/src/services/communityChatService.ts
+@@ -0,0 +1,346 @@
++import {
++  collection,
++  doc,
++  getDoc,
++  getDocs,
++  onSnapshot,
++  orderBy,
++  query,
++  setDoc,
++  updateDoc,
++  where,
++  type Unsubscribe,
++} from 'firebase/firestore';
++import { auth, db, handleFirestoreError, OperationType } from './firebase';
++import type { CommunityMember, CommunityProfile } from './gymRepository';
++
++export interface MatchRecommendation {
++  member: CommunityMember;
++  score: number; // 0 - 100%
++  reasons: string[];
++  sharedGoals: string[];
++  sharedTimes: string[];
++  sameStudy: boolean;
++}
++
++export interface CloudConversation {
++  id: string;
++  participantIds: string[];
++  participantNames: Record<string, string>;
++  lastMessageText?: string;
++  lastMessageAt?: string;
++  lastSenderId?: string;
++  createdAt: string;
++}
++
++export interface CloudChatMessage {
++  id: string;
++  conversationId: string;
++  senderId: string;
++  senderName: string;
++  text: string;
++  createdAt: string;
++}
++
++export interface CloudNotification {
++  id: string;
++  userId: string;
++  type: 'partner_request' | 'partner_accepted' | 'new_message' | 'slot_reminder' | 'gym_alert';
++  title: string;
++  message: string;
++  read: boolean;
++  linkUrl?: string;
++  createdAt: string;
++}
++
++/**
++ * Calculates a match score (0-100%) and matching reasons between two profiles.
++ */
++export function calculateMatch(
++  me: CommunityProfile | null,
++  other: CommunityMember,
++): MatchRecommendation {
++  const reasons: string[] = [];
++  const sharedGoals: string[] = [];
++  const sharedTimes: string[] = [];
++
++  if (!me) {
++    return {
++      member: other,
++      score: 50,
++      reasons: ['Vervollständige dein Profil für genaue Empfehlungen'],
++      sharedGoals: [],
++      sharedTimes: [],
++      sameStudy: false,
++    };
++  }
++
++  let score = 20; // Base score for fellow DHBW student
++
++  // 1. Shared Training Goals (up to 45 pts)
++  const myGoals = me.trainingGoals || [];
++  const otherGoals = other.trainingGoals || [];
++  for (const g of myGoals) {
++    if (otherGoals.some((og) => og.toLowerCase() === g.toLowerCase())) {
++      sharedGoals.push(g);
++    }
++  }
++  if (sharedGoals.length > 0) {
++    const goalPoints = Math.min(45, sharedGoals.length * 20);
++    score += goalPoints;
++    reasons.push(`Gemeinsame Ziele: ${sharedGoals.join(', ')}`);
++  }
++
++  // 2. Shared Preferred Workout Times (up to 25 pts)
++  const myTimes = me.preferredTimes || [];
++  const otherTimes = other.preferredTimes || [];
++  for (const t of myTimes) {
++    if (otherTimes.some((ot) => ot.toLowerCase() === t.toLowerCase())) {
++      sharedTimes.push(t);
++    }
++  }
++  if (sharedTimes.length > 0) {
++    score += 25;
++    reasons.push(`Gleiches Zeitfenster: ${sharedTimes.join(', ')}`);
++  }
++
++  // 3. Course of study (10 pts)
++  const sameStudy =
++    Boolean(me.courseOfStudy && other.courseOfStudy) &&
++    me.courseOfStudy.trim().toLowerCase() === other.courseOfStudy.trim().toLowerCase();
++  if (sameStudy) {
++    score += 10;
++    reasons.push(`Gleicher Studiengang: ${other.courseOfStudy}`);
++  }
++
++  // 4. Live presence or active gym status (up to 10 pts)
++  if (other.activeNow) {
++    score += 10;
++    reasons.push('Gerade live im Gym anwesend!');
++  } else if (other.plannedNext) {
++    score += 5;
++    reasons.push('Hat bereits geplante Sessions');
++  }
++
++  const finalScore = Math.min(100, Math.max(30, score));
++
++  if (reasons.length === 0) {
++    reasons.push('Gemeinsamer DHBW Campus Bad Mergentheim');
++  }
++
++  return {
++    member: other,
++    score: finalScore,
++    reasons,
++    sharedGoals,
++    sharedTimes,
++    sameStudy,
++  };
++}
++
++/**
++ * Get sorted recommendations for current user
++ */
++export function getMatchRecommendations(
++  myProfile: CommunityProfile | null,
++  members: CommunityMember[],
++): MatchRecommendation[] {
++  return members
++    .filter((m) => !m.isSelf)
++    .map((m) => calculateMatch(myProfile, m))
++    .sort((a, b) => b.score - a.score);
++}
++
++/**
++ * Firestore Conversations & Real-Time Chat
++ */
++export function getConversationId(uid1: string, uid2: string): string {
++  return [uid1, uid2].sort().join('_').replace(/[^a-zA-Z0-9_-]/g, '-');
++}
++
++export async function createOrGetConversation(
++  myUid: string,
++  myName: string,
++  otherUid: string,
++  otherName: string,
++): Promise<string> {
++  const convId = getConversationId(myUid, otherUid);
++  const convRef = doc(db, 'conversations', convId);
++
++  try {
++    const existing = await getDoc(convRef);
++    if (!existing.exists()) {
++      const payload: CloudConversation = {
++        id: convId,
++        participantIds: [myUid, otherUid],
++        participantNames: {
++          [myUid]: myName || 'Du',
++          [otherUid]: otherName || 'Trainingspartner',
++        },
++        createdAt: new Date().toISOString(),
++      };
++      await setDoc(convRef, payload);
++    }
++    return convId;
++  } catch (err) {
++    handleFirestoreError(err, OperationType.WRITE, `conversations/${convId}`);
++  }
++}
++
++export function subscribeToConversations(
++  userId: string,
++  onUpdate: (conversations: CloudConversation[]) => void,
++): Unsubscribe {
++  if (!auth.currentUser || !userId || auth.currentUser.uid !== userId) {
++    return () => {};
++  }
++  const path = 'conversations';
++  const q = query(collection(db, path), where('participantIds', 'array-contains', userId));
++
++  return onSnapshot(
++    q,
++    (snapshot) => {
++      const list = snapshot.docs.map((d) => d.data() as CloudConversation);
++      list.sort((a, b) => (b.lastMessageAt || b.createdAt || '').localeCompare(a.lastMessageAt || a.createdAt || ''));
++      onUpdate(list);
++    },
++    (error) => {
++      handleFirestoreError(error, OperationType.LIST, path);
++    },
++  );
++}
++
++export function subscribeToMessages(
++  conversationId: string,
++  onUpdate: (messages: CloudChatMessage[]) => void,
++): Unsubscribe {
++  if (!auth.currentUser || !conversationId) {
++    return () => {};
++  }
++  const path = `conversations/${conversationId}/messages`;
++  const q = query(collection(db, 'conversations', conversationId, 'messages'));
++
++  return onSnapshot(
++    q,
++    (snapshot) => {
++      const msgs = snapshot.docs.map((d) => d.data() as CloudChatMessage);
++      msgs.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
++      onUpdate(msgs);
++    },
++    (error) => {
++      handleFirestoreError(error, OperationType.LIST, path);
++    },
++  );
++}
++
++export async function sendChatMessage(
++  conversationId: string,
++  senderId: string,
++  senderName: string,
++  text: string,
++  otherUserId?: string,
++): Promise<void> {
++  const msgId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
++  const now = new Date().toISOString();
++  const path = `conversations/${conversationId}/messages/${msgId}`;
++
++  const messageDoc: CloudChatMessage = {
++    id: msgId,
++    conversationId,
++    senderId,
++    senderName,
++    text: text.trim(),
++    createdAt: now,
++  };
++
++  try {
++    await setDoc(doc(db, 'conversations', conversationId, 'messages', msgId), messageDoc);
++    await updateDoc(doc(db, 'conversations', conversationId), {
++      lastMessageText: text.trim().slice(0, 100),
++      lastMessageAt: now,
++      lastSenderId: senderId,
++    });
++
++    // Notify other participant if known
++    if (otherUserId && otherUserId !== senderId) {
++      await sendNotification(otherUserId, {
++        type: 'new_message',
++        title: `Neue Nachricht von ${senderName}`,
++        message: text.trim().slice(0, 100),
++        linkUrl: `/chat/${conversationId}`,
++      });
++    }
++  } catch (err) {
++    handleFirestoreError(err, OperationType.WRITE, path);
++  }
++}
++
++/**
++ * Firestore Real-Time Notifications & Slot Reminders
++ */
++export function subscribeToNotifications(
++  userId: string,
++  onUpdate: (notifications: CloudNotification[]) => void,
++): Unsubscribe {
++  if (!auth.currentUser || !userId || auth.currentUser.uid !== userId) {
++    return () => {};
++  }
++  const path = `users/${userId}/notifications`;
++  const q = query(collection(db, 'users', userId, 'notifications'));
++
++  return onSnapshot(
++    q,
++    (snapshot) => {
++      const items = snapshot.docs.map((d) => d.data() as CloudNotification);
++      items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
++      onUpdate(items);
++    },
++    (error) => {
++      handleFirestoreError(error, OperationType.LIST, path);
++    },
++  );
++}
++
++export async function sendNotification(
++  userId: string,
++  notification: Omit<CloudNotification, 'id' | 'userId' | 'read' | 'createdAt'>,
++): Promise<void> {
++  const notifId = `notif_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
++  const now = new Date().toISOString();
++  const path = `users/${userId}/notifications/${notifId}`;
++
++  const payload: CloudNotification = {
++    id: notifId,
++    userId,
++    type: notification.type,
++    title: notification.title,
++    message: notification.message,
++    read: false,
++    linkUrl: notification.linkUrl,
++    createdAt: now,
++  };
++
++  try {
++    await setDoc(doc(db, 'users', userId, 'notifications', notifId), payload);
++  } catch (err) {
++    handleFirestoreError(err, OperationType.CREATE, path);
++  }
++}
++
++export async function markNotificationAsRead(userId: string, notificationId: string): Promise<void> {
++  const path = `users/${userId}/notifications/${notificationId}`;
++  try {
++    await updateDoc(doc(db, 'users', userId, 'notifications', notificationId), {
++      read: true,
++    });
++  } catch (err) {
++    handleFirestoreError(err, OperationType.UPDATE, path);
++  }
++}
++
++export async function markAllNotificationsAsRead(userId: string, notifications: CloudNotification[]): Promise<void> {
++  const unread = notifications.filter((n) => !n.read);
++  await Promise.all(
++    unread.map((n) => markNotificationAsRead(userId, n.id).catch(() => undefined)),
++  );
++}
+diff --git a/src/services/firebase.ts b/src/services/firebase.ts
+new file mode 100644
+index 0000000..48e45d6
+--- /dev/null
++++ b/src/services/firebase.ts
+@@ -0,0 +1,120 @@
++import { initializeApp } from 'firebase/app';
++import {
++  getAuth,
++  signInAnonymously,
++  signInWithPopup,
++  GoogleAuthProvider,
++  signOut,
++  onAuthStateChanged,
++  type User,
++} from 'firebase/auth';
++import {
++  getFirestore,
++  doc,
++  getDocFromServer,
++  collection,
++  query,
++  where,
++  orderBy,
++  onSnapshot,
++  setDoc,
++  updateDoc,
++  deleteDoc,
++  getDocs,
++  getDoc,
++  serverTimestamp,
++  type Unsubscribe,
++} from 'firebase/firestore';
++import firebaseConfig from '../../firebase-applet-config.json';
++
++export enum OperationType {
++  CREATE = 'create',
++  UPDATE = 'update',
++  DELETE = 'delete',
++  LIST = 'list',
++  GET = 'get',
++  WRITE = 'write',
++}
++
++export interface FirestoreErrorInfo {
++  error: string;
++  operationType: OperationType;
++  path: string | null;
++  authInfo: {
++    userId?: string | null;
++    email?: string | null;
++    emailVerified?: boolean | null;
++    isAnonymous?: boolean | null;
++    tenantId?: string | null;
++    providerInfo?: {
++      providerId?: string | null;
++      email?: string | null;
++    }[];
++  };
++}
++
++const app = initializeApp(firebaseConfig);
++// CRITICAL: Specifying the custom firestoreDatabaseId from configuration
++export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
++export const auth = getAuth(app);
++
++export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null): never {
++  const errInfo: FirestoreErrorInfo = {
++    error: error instanceof Error ? error.message : String(error),
++    authInfo: {
++      userId: auth.currentUser?.uid,
++      email: auth.currentUser?.email,
++      emailVerified: auth.currentUser?.emailVerified,
++      isAnonymous: auth.currentUser?.isAnonymous,
++      tenantId: auth.currentUser?.tenantId,
++      providerInfo:
++        auth.currentUser?.providerData?.map((p) => ({
++          providerId: p.providerId,
++          email: p.email,
++        })) || [],
++    },
++    operationType,
++    path,
++  };
++  console.error('Firestore Error: ', JSON.stringify(errInfo));
++  throw new Error(JSON.stringify(errInfo));
++}
++
++// Test connectivity on initial boot as required by skill guidelines
++async function testConnection() {
++  try {
++    await getDocFromServer(doc(db, 'test', 'connection'));
++  } catch (error) {
++    if (error instanceof Error && error.message.includes('the client is offline')) {
++      console.warn('Firebase client is offline. Cloud features may wait for network.');
++    }
++  }
++}
++void testConnection();
++
++// Auth listener for state changes
++export function subscribeToAuth(onUserChanged: (user: User | null) => void): Unsubscribe {
++  return onAuthStateChanged(auth, (user) => {
++    onUserChanged(user);
++  });
++}
++
++export async function getCurrentFirebaseUser(): Promise<User | null> {
++  if (auth.currentUser) return auth.currentUser;
++  return new Promise((resolve) => {
++    const unsub = onAuthStateChanged(auth, (user) => {
++      unsub();
++      resolve(user);
++    });
++  });
++}
++
++export async function loginWithGoogle(): Promise<User> {
++  const provider = new GoogleAuthProvider();
++  const cred = await signInWithPopup(auth, provider);
++  return cred.user;
++}
++
++export async function logoutFirebase(): Promise<void> {
++  await signOut(auth);
++}
+-- 
+2.34.1
+

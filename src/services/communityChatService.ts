@@ -1,0 +1,346 @@
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  onSnapshot,
+  orderBy,
+  query,
+  setDoc,
+  updateDoc,
+  where,
+  type Unsubscribe,
+} from 'firebase/firestore';
+import { auth, db, handleFirestoreError, OperationType } from './firebase';
+import type { CommunityMember, CommunityProfile } from './gymRepository';
+
+export interface MatchRecommendation {
+  member: CommunityMember;
+  score: number; // 0 - 100%
+  reasons: string[];
+  sharedGoals: string[];
+  sharedTimes: string[];
+  sameStudy: boolean;
+}
+
+export interface CloudConversation {
+  id: string;
+  participantIds: string[];
+  participantNames: Record<string, string>;
+  lastMessageText?: string;
+  lastMessageAt?: string;
+  lastSenderId?: string;
+  createdAt: string;
+}
+
+export interface CloudChatMessage {
+  id: string;
+  conversationId: string;
+  senderId: string;
+  senderName: string;
+  text: string;
+  createdAt: string;
+}
+
+export interface CloudNotification {
+  id: string;
+  userId: string;
+  type: 'partner_request' | 'partner_accepted' | 'new_message' | 'slot_reminder' | 'gym_alert';
+  title: string;
+  message: string;
+  read: boolean;
+  linkUrl?: string;
+  createdAt: string;
+}
+
+/**
+ * Calculates a match score (0-100%) and matching reasons between two profiles.
+ */
+export function calculateMatch(
+  me: CommunityProfile | null,
+  other: CommunityMember,
+): MatchRecommendation {
+  const reasons: string[] = [];
+  const sharedGoals: string[] = [];
+  const sharedTimes: string[] = [];
+
+  if (!me) {
+    return {
+      member: other,
+      score: 50,
+      reasons: ['Vervollständige dein Profil für genaue Empfehlungen'],
+      sharedGoals: [],
+      sharedTimes: [],
+      sameStudy: false,
+    };
+  }
+
+  let score = 20; // Base score for fellow DHBW student
+
+  // 1. Shared Training Goals (up to 45 pts)
+  const myGoals = me.trainingGoals || [];
+  const otherGoals = other.trainingGoals || [];
+  for (const g of myGoals) {
+    if (otherGoals.some((og) => og.toLowerCase() === g.toLowerCase())) {
+      sharedGoals.push(g);
+    }
+  }
+  if (sharedGoals.length > 0) {
+    const goalPoints = Math.min(45, sharedGoals.length * 20);
+    score += goalPoints;
+    reasons.push(`Gemeinsame Ziele: ${sharedGoals.join(', ')}`);
+  }
+
+  // 2. Shared Preferred Workout Times (up to 25 pts)
+  const myTimes = me.preferredTimes || [];
+  const otherTimes = other.preferredTimes || [];
+  for (const t of myTimes) {
+    if (otherTimes.some((ot) => ot.toLowerCase() === t.toLowerCase())) {
+      sharedTimes.push(t);
+    }
+  }
+  if (sharedTimes.length > 0) {
+    score += 25;
+    reasons.push(`Gleiches Zeitfenster: ${sharedTimes.join(', ')}`);
+  }
+
+  // 3. Course of study (10 pts)
+  const sameStudy =
+    Boolean(me.courseOfStudy && other.courseOfStudy) &&
+    me.courseOfStudy.trim().toLowerCase() === other.courseOfStudy.trim().toLowerCase();
+  if (sameStudy) {
+    score += 10;
+    reasons.push(`Gleicher Studiengang: ${other.courseOfStudy}`);
+  }
+
+  // 4. Live presence or active gym status (up to 10 pts)
+  if (other.activeNow) {
+    score += 10;
+    reasons.push('Gerade live im Gym anwesend!');
+  } else if (other.plannedNext) {
+    score += 5;
+    reasons.push('Hat bereits geplante Sessions');
+  }
+
+  const finalScore = Math.min(100, Math.max(30, score));
+
+  if (reasons.length === 0) {
+    reasons.push('Gemeinsamer DHBW Campus Bad Mergentheim');
+  }
+
+  return {
+    member: other,
+    score: finalScore,
+    reasons,
+    sharedGoals,
+    sharedTimes,
+    sameStudy,
+  };
+}
+
+/**
+ * Get sorted recommendations for current user
+ */
+export function getMatchRecommendations(
+  myProfile: CommunityProfile | null,
+  members: CommunityMember[],
+): MatchRecommendation[] {
+  return members
+    .filter((m) => !m.isSelf)
+    .map((m) => calculateMatch(myProfile, m))
+    .sort((a, b) => b.score - a.score);
+}
+
+/**
+ * Firestore Conversations & Real-Time Chat
+ */
+export function getConversationId(uid1: string, uid2: string): string {
+  return [uid1, uid2].sort().join('_').replace(/[^a-zA-Z0-9_-]/g, '-');
+}
+
+export async function createOrGetConversation(
+  myUid: string,
+  myName: string,
+  otherUid: string,
+  otherName: string,
+): Promise<string> {
+  const convId = getConversationId(myUid, otherUid);
+  const convRef = doc(db, 'conversations', convId);
+
+  try {
+    const existing = await getDoc(convRef);
+    if (!existing.exists()) {
+      const payload: CloudConversation = {
+        id: convId,
+        participantIds: [myUid, otherUid],
+        participantNames: {
+          [myUid]: myName || 'Du',
+          [otherUid]: otherName || 'Trainingspartner',
+        },
+        createdAt: new Date().toISOString(),
+      };
+      await setDoc(convRef, payload);
+    }
+    return convId;
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, `conversations/${convId}`);
+  }
+}
+
+export function subscribeToConversations(
+  userId: string,
+  onUpdate: (conversations: CloudConversation[]) => void,
+): Unsubscribe {
+  if (!auth.currentUser || !userId || auth.currentUser.uid !== userId) {
+    return () => {};
+  }
+  const path = 'conversations';
+  const q = query(collection(db, path), where('participantIds', 'array-contains', userId));
+
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const list = snapshot.docs.map((d) => d.data() as CloudConversation);
+      list.sort((a, b) => (b.lastMessageAt || b.createdAt || '').localeCompare(a.lastMessageAt || a.createdAt || ''));
+      onUpdate(list);
+    },
+    (error) => {
+      handleFirestoreError(error, OperationType.LIST, path);
+    },
+  );
+}
+
+export function subscribeToMessages(
+  conversationId: string,
+  onUpdate: (messages: CloudChatMessage[]) => void,
+): Unsubscribe {
+  if (!auth.currentUser || !conversationId) {
+    return () => {};
+  }
+  const path = `conversations/${conversationId}/messages`;
+  const q = query(collection(db, 'conversations', conversationId, 'messages'));
+
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const msgs = snapshot.docs.map((d) => d.data() as CloudChatMessage);
+      msgs.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      onUpdate(msgs);
+    },
+    (error) => {
+      handleFirestoreError(error, OperationType.LIST, path);
+    },
+  );
+}
+
+export async function sendChatMessage(
+  conversationId: string,
+  senderId: string,
+  senderName: string,
+  text: string,
+  otherUserId?: string,
+): Promise<void> {
+  const msgId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const now = new Date().toISOString();
+  const path = `conversations/${conversationId}/messages/${msgId}`;
+
+  const messageDoc: CloudChatMessage = {
+    id: msgId,
+    conversationId,
+    senderId,
+    senderName,
+    text: text.trim(),
+    createdAt: now,
+  };
+
+  try {
+    await setDoc(doc(db, 'conversations', conversationId, 'messages', msgId), messageDoc);
+    await updateDoc(doc(db, 'conversations', conversationId), {
+      lastMessageText: text.trim().slice(0, 100),
+      lastMessageAt: now,
+      lastSenderId: senderId,
+    });
+
+    // Notify other participant if known
+    if (otherUserId && otherUserId !== senderId) {
+      await sendNotification(otherUserId, {
+        type: 'new_message',
+        title: `Neue Nachricht von ${senderName}`,
+        message: text.trim().slice(0, 100),
+        linkUrl: `/chat/${conversationId}`,
+      });
+    }
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, path);
+  }
+}
+
+/**
+ * Firestore Real-Time Notifications & Slot Reminders
+ */
+export function subscribeToNotifications(
+  userId: string,
+  onUpdate: (notifications: CloudNotification[]) => void,
+): Unsubscribe {
+  if (!auth.currentUser || !userId || auth.currentUser.uid !== userId) {
+    return () => {};
+  }
+  const path = `users/${userId}/notifications`;
+  const q = query(collection(db, 'users', userId, 'notifications'));
+
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const items = snapshot.docs.map((d) => d.data() as CloudNotification);
+      items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      onUpdate(items);
+    },
+    (error) => {
+      handleFirestoreError(error, OperationType.LIST, path);
+    },
+  );
+}
+
+export async function sendNotification(
+  userId: string,
+  notification: Omit<CloudNotification, 'id' | 'userId' | 'read' | 'createdAt'>,
+): Promise<void> {
+  const notifId = `notif_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  const now = new Date().toISOString();
+  const path = `users/${userId}/notifications/${notifId}`;
+
+  const payload: CloudNotification = {
+    id: notifId,
+    userId,
+    type: notification.type,
+    title: notification.title,
+    message: notification.message,
+    read: false,
+    linkUrl: notification.linkUrl,
+    createdAt: now,
+  };
+
+  try {
+    await setDoc(doc(db, 'users', userId, 'notifications', notifId), payload);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.CREATE, path);
+  }
+}
+
+export async function markNotificationAsRead(userId: string, notificationId: string): Promise<void> {
+  const path = `users/${userId}/notifications/${notificationId}`;
+  try {
+    await updateDoc(doc(db, 'users', userId, 'notifications', notificationId), {
+      read: true,
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, path);
+  }
+}
+
+export async function markAllNotificationsAsRead(userId: string, notifications: CloudNotification[]): Promise<void> {
+  const unread = notifications.filter((n) => !n.read);
+  await Promise.all(
+    unread.map((n) => markNotificationAsRead(userId, n.id).catch(() => undefined)),
+  );
+}

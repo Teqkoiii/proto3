@@ -1,0 +1,181 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Default Deny Catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidCommunityProfile(data) {
+      return data.keys().hasAll(['userId', 'firstName']) &&
+             data.userId is string && data.userId.size() <= 128 &&
+             data.firstName is string && data.firstName.size() <= 50 &&
+             (!('lastNameInitial' in data) || (data.lastNameInitial is string && data.lastNameInitial.size() <= 5)) &&
+             (!('courseOfStudy' in data) || (data.courseOfStudy is string && data.courseOfStudy.size() <= 100)) &&
+             (!('bio' in data) || (data.bio is string && data.bio.size() <= 300)) &&
+             (!('isPublicPresence' in data) || data.isPublicPresence is bool) &&
+             (!('trainingGoals' in data) || (data.trainingGoals is list && data.trainingGoals.size() <= 10)) &&
+             (!('preferredTimes' in data) || (data.preferredTimes is list && data.preferredTimes.size() <= 10));
+    }
+
+    function isValidPartnerRequest(data) {
+      return data.keys().hasAll(['senderId', 'receiverId', 'status']) &&
+             data.senderId is string && data.senderId.size() <= 128 &&
+             data.receiverId is string && data.receiverId.size() <= 128 &&
+             data.status in ['pending', 'accepted', 'declined', 'cancelled'] &&
+             (!('senderName' in data) || (data.senderName is string && data.senderName.size() <= 60)) &&
+             (!('receiverName' in data) || (data.receiverName is string && data.receiverName.size() <= 60)) &&
+             (!('note' in data) || (data.note is string && data.note.size() <= 300)) &&
+             (!('proposedDate' in data) || (data.proposedDate is string && data.proposedDate.size() <= 40));
+    }
+
+    function isValidConversation(data) {
+      return data.keys().hasAll(['id', 'participantIds']) &&
+             isValidId(data.id) &&
+             data.participantIds is list &&
+             data.participantIds.size() >= 1 &&
+             data.participantIds.size() <= 5 &&
+             (!('lastMessageText' in data) || (data.lastMessageText is string && data.lastMessageText.size() <= 500));
+    }
+
+    function isValidChatMessage(data) {
+      return data.keys().hasAll(['id', 'conversationId', 'senderId', 'text']) &&
+             isValidId(data.id) &&
+             data.conversationId is string && data.conversationId.size() <= 128 &&
+             data.senderId is string && data.senderId.size() <= 128 &&
+             data.text is string && data.text.size() > 0 && data.text.size() <= 1000 &&
+             (!('senderName' in data) || (data.senderName is string && data.senderName.size() <= 60));
+    }
+
+    function isValidNotification(data) {
+      return data.keys().hasAll(['id', 'userId', 'type', 'title', 'message', 'read']) &&
+             isValidId(data.id) &&
+             data.userId is string && data.userId.size() <= 128 &&
+             data.type in ['partner_request', 'partner_accepted', 'new_message', 'slot_reminder', 'gym_alert'] &&
+             data.title is string && data.title.size() <= 120 &&
+             data.message is string && data.message.size() <= 300 &&
+             data.read is bool;
+    }
+
+    // Connection Healthcheck Document
+    match /test/{docId} {
+      allow read: if true;
+    }
+
+    // Community Profiles
+    match /community_profiles/{profileId} {
+      allow get: if isSignedIn() && isValidId(profileId);
+      allow list: if isSignedIn();
+      allow create: if isSignedIn() &&
+                       isValidId(profileId) &&
+                       incoming().userId == request.auth.uid &&
+                       isValidCommunityProfile(incoming());
+      allow update: if isSignedIn() &&
+                       isValidId(profileId) &&
+                       existing().userId == request.auth.uid &&
+                       incoming().userId == existing().userId &&
+                       isValidCommunityProfile(incoming());
+      allow delete: if isSignedIn() && isValidId(profileId) && existing().userId == request.auth.uid;
+    }
+
+    // Training Partner Requests
+    match /partner_requests/{requestId} {
+      allow get: if isSignedIn() &&
+                    isValidId(requestId) &&
+                    (resource.data.senderId == request.auth.uid || resource.data.receiverId == request.auth.uid);
+      allow list: if isSignedIn() &&
+                     (resource.data.senderId == request.auth.uid || resource.data.receiverId == request.auth.uid);
+      allow create: if isSignedIn() &&
+                       isValidId(requestId) &&
+                       incoming().senderId == request.auth.uid &&
+                       isValidPartnerRequest(incoming());
+      allow update: if isSignedIn() &&
+                       isValidId(requestId) &&
+                       isValidPartnerRequest(incoming()) && (
+                         (existing().receiverId == request.auth.uid &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['status']) &&
+                          incoming().status in ['accepted', 'declined']) ||
+                         (existing().senderId == request.auth.uid &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['status']) &&
+                          incoming().status == 'cancelled')
+                       );
+      allow delete: if isSignedIn() &&
+                       isValidId(requestId) &&
+                       (existing().senderId == request.auth.uid || existing().receiverId == request.auth.uid);
+    }
+
+    // Direct Chat Conversations
+    match /conversations/{conversationId} {
+      allow get: if isSignedIn() &&
+                    isValidId(conversationId) &&
+                    request.auth.uid in resource.data.participantIds;
+      allow list: if isSignedIn() &&
+                     request.auth.uid in resource.data.participantIds;
+      allow create: if isSignedIn() &&
+                       isValidId(conversationId) &&
+                       request.auth.uid in incoming().participantIds &&
+                       isValidConversation(incoming());
+      allow update: if isSignedIn() &&
+                       isValidId(conversationId) &&
+                       request.auth.uid in existing().participantIds &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['lastMessageText', 'lastMessageAt', 'lastSenderId']);
+
+      // Nested Chat Messages
+      match /messages/{messageId} {
+        allow get: if isSignedIn() &&
+                      isValidId(conversationId) &&
+                      isValidId(messageId) &&
+                      exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
+                      request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
+        allow list: if isSignedIn() &&
+                       isValidId(conversationId) &&
+                       exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
+                       request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
+        allow create: if isSignedIn() &&
+                         isValidId(messageId) &&
+                         incoming().senderId == request.auth.uid &&
+                         incoming().conversationId == conversationId &&
+                         isValidChatMessage(incoming()) &&
+                         exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
+                         request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
+        allow delete: if isSignedIn() &&
+                         isValidId(messageId) &&
+                         existing().senderId == request.auth.uid;
+      }
+    }
+
+    // User Private Notifications & Slot Reminders
+    match /users/{userId}/notifications/{notificationId} {
+      allow get: if isSignedIn() && isValidId(userId) && isValidId(notificationId) && userId == request.auth.uid;
+      allow list: if isSignedIn() && isValidId(userId) && userId == request.auth.uid;
+      allow delete: if isSignedIn() && isValidId(userId) && isValidId(notificationId) && userId == request.auth.uid;
+      allow update: if isSignedIn() &&
+                       isValidId(userId) &&
+                       isValidId(notificationId) &&
+                       userId == request.auth.uid &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['read']);
+      allow create: if isSignedIn() &&
+                       isValidId(userId) &&
+                       isValidId(notificationId) &&
+                       incoming().userId == userId &&
+                       isValidNotification(incoming());
+    }
+  }
+}
