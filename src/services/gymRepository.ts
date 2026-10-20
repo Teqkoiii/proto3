@@ -163,6 +163,7 @@ export interface GymRepository {
   logout(): Promise<void>;
   getAvailability(startAt: string, durationMinutes: number): Promise<GymAvailability>;
   createBooking(input: { startsAt: string; durationMinutes: number; title?: string; entryType?: 'planned' | 'reservation' }): Promise<GymBooking>;
+  updateBooking(id: string, input: { startsAt: string; durationMinutes: number; title?: string; entryType?: 'planned' | 'reservation' }): Promise<GymBooking>;
   deleteBooking(id: string): Promise<void>;
   getVisits(): Promise<GymVisit[]>;
   getWorkouts(): Promise<WorkoutLog[]>;
@@ -304,6 +305,13 @@ export function createGymRepository(fetcher: FetchLike = fetch): GymRepository {
     async createBooking(input) {
       const result = await request<{ booking: GymBooking }>('/api/gym/bookings', {
         method: 'POST',
+        body: JSON.stringify(input),
+      });
+      return result.booking;
+    },
+    async updateBooking(id, input) {
+      const result = await request<{ booking: GymBooking }>(`/api/gym/my/bookings/${encodeURIComponent(id)}`, {
+        method: 'PUT',
         body: JSON.stringify(input),
       });
       return result.booking;
