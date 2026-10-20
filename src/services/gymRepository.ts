@@ -191,7 +191,7 @@ interface FetchResponseLike {
 }
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<FetchResponseLike>;
-const apiBaseUrl = (import.meta.env.VITE_GYM_API_BASE_URL ?? '').replace(/\/$/, '');
+const apiBaseUrl = (import.meta.env?.VITE_GYM_API_BASE_URL ?? '').replace(/\/$/, '');
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -354,5 +354,4 @@ export function createGymRepository(fetcher: FetchLike = fetch): GymRepository {
 }
 
 export const gymRepository = createGymRepository();
-
 

@@ -41,6 +41,7 @@ import {
   isSameDay,
   startOfLocalWeek,
 } from './format';
+import { submitCalendarBooking, type CalendarBookingInput } from './calendarBookingSubmission';
 import { EmptyState, Field, InlineNotice, PageHeading, SectionTitle } from './components';
 
 function tomorrowInputValue(): string {
@@ -94,8 +95,8 @@ export function Calendar({
   online: boolean;
   busy: boolean;
   error: string | null;
-  onCreateBooking: (input: { startsAt: string; durationMinutes: number; title?: string; entryType?: 'planned' | 'reservation' }) => void;
-  onUpdateBooking?: (id: string, input: { startsAt: string; durationMinutes: number; title?: string; entryType?: 'planned' | 'reservation' }) => void;
+  onCreateBooking: (input: CalendarBookingInput) => void;
+  onUpdateBooking: (id: string, input: CalendarBookingInput) => Promise<boolean>;
   onDeleteBooking: (id: string) => void;
   onCheckAvailability: (startAt: string, duration: number) => void;
   onPresence: (present: boolean) => void;
@@ -228,7 +229,7 @@ export function Calendar({
     }
   };
 
-  const create = (event: React.FormEvent<HTMLFormElement>) => {
+  const create = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!startsAtIso) return;
     const payload = {
@@ -238,12 +239,13 @@ export function Calendar({
       entryType,
     };
 
-    if (editingBookingId && onUpdateBooking) {
-      onUpdateBooking(editingBookingId, payload);
-      return;
-    }
-
-    onCreateBooking(payload);
+    await submitCalendarBooking({
+      bookingId: editingBookingId,
+      input: payload,
+      onCreate: onCreateBooking,
+      onUpdate: onUpdateBooking,
+      onSuccess: resetBookingForm,
+    });
   };
 
   const handleSelectDayForPlanning = (day: Date) => {
@@ -981,5 +983,4 @@ export function Calendar({
     </>
   );
 }
-
 
