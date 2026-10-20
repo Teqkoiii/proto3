@@ -1,7 +1,14 @@
+import {
+  getFirebaseIdToken,
+  loginWithEmailAndPassword,
+  logoutFirebase,
+  registerWithEmailAndPassword,
+  resendVerificationEmail,
+} from './firebaseAuth';
+
 export interface GymSession {
-  identity: 'anonymous-app-profile' | 'local-account';
+  identity: 'firebase-account';
   email?: string | null;
-  recoveryConfigured: boolean;
   checkedInAt: string | null;
   checkInExpiresAt: string | null;
   maxCheckInHours: number;
@@ -147,9 +154,21 @@ export interface GymRepository {
   getCommunityProfile(): Promise<CommunityProfile>;
   updateCommunityProfile(input: Partial<CommunityProfile>): Promise<CommunityProfile>;
   getCommunityMembers(): Promise<CommunityMember[]>;
+  createCommunityConversation(partnerPrincipalId: string): Promise<{
+    conversationId: string;
+    otherParticipantUid: string;
+  }>;
   getPartnerRequests(): Promise<TrainingPartnerRequest[]>;
-  sendPartnerRequest(receiverId: string, note?: string, proposedDate?: string): Promise<{ id: string }>;
-  respondToPartnerRequest(id: string, status: 'accepted' | 'declined' | 'cancelled'): Promise<{ id: string; status: string }>;
+  sendPartnerRequest(receiverId: string, note?: string, proposedDate?: string): Promise<{
+    id: string;
+    notificationStatus: 'sent' | 'unavailable' | 'failed';
+  }>;
+  respondToPartnerRequest(id: string, status: 'accepted' | 'declined' | 'cancelled'): Promise<{
+    id: string;
+    status: string;
+    notificationStatus: 'sent' | 'unavailable' | 'failed';
+  }>;
+  linkFirebaseAccount(legacyPassword?: string): Promise<GymSession>;
   registerWithDhbw(input: {
     email: string;
     password: string;
@@ -159,6 +178,7 @@ export interface GymRepository {
     trainingGoals?: string[];
     preferredTimes?: string[];
   }): Promise<void>;
+  resendVerificationEmail(email: string, password: string): Promise<void>;
   login(email: string, password: string): Promise<void>;
   logout(): Promise<void>;
   getAvailability(startAt: string, durationMinutes: number): Promise<GymAvailability>;
@@ -171,8 +191,6 @@ export interface GymRepository {
   deleteWorkout(id: string): Promise<void>;
   getWeeklyGoal(): Promise<number>;
   setWeeklyGoal(weeklySessions: number): Promise<void>;
-  issueRecoveryCode(): Promise<string>;
-  recoverProfile(recoveryCode: string): Promise<void>;
   deletePersonalData(): Promise<void>;
 }
 
@@ -197,15 +215,25 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-export function createGymRepository(fetcher: FetchLike = fetch): GymRepository {
+export function createGymRepository(
+  fetcher: FetchLike = fetch,
+  idTokenProvider?: () => Promise<string | undefined>,
+): GymRepository {
   async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const token = idTokenProvider
+      ? await idTokenProvider()
+      : await getFirebaseIdToken();
     let response: FetchResponseLike;
     try {
       response = await fetcher(`${apiBaseUrl}${path}`, {
         ...init,
         credentials: apiBaseUrl ? 'include' : 'same-origin',
         cache: 'no-store',
-        headers: { ...(init.body ? { 'Content-Type': 'application/json' } : {}), ...init.headers },
+        headers: {
+          ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+          ...init.headers,
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
       });
     } catch {
       throw new GymApiError('Der Gym-Server ist gerade nicht erreichbar.', 0);
@@ -229,6 +257,12 @@ export function createGymRepository(fetcher: FetchLike = fetch): GymRepository {
 
   return {
     getSession: () => request<GymSession>('/api/gym/session'),
+    async linkFirebaseAccount(legacyPassword) {
+      return request<GymSession>('/api/gym/auth/link', {
+        method: 'POST',
+        body: JSON.stringify(legacyPassword ? { legacyPassword } : {}),
+      });
+    },
     getOccupancy: (range: OccupancyRange = '24h') => request<OccupancySnapshot>(`/api/gym/occupancy?range=${range}`),
     async setCheckedIn(checkedIn) {
       await request(checkedIn ? '/api/gym/check-in' : '/api/gym/check-out', { method: 'POST' });
@@ -267,36 +301,51 @@ export function createGymRepository(fetcher: FetchLike = fetch): GymRepository {
       const result = await request<{ members: CommunityMember[] }>('/api/gym/community/members');
       return result.members;
     },
+    createCommunityConversation(partnerPrincipalId) {
+      return request('/api/gym/community/conversations', {
+        method: 'POST',
+        body: JSON.stringify({ partnerPrincipalId }),
+      });
+    },
     async getPartnerRequests() {
       const result = await request<{ requests: TrainingPartnerRequest[] }>('/api/gym/community/partner-requests');
       return result.requests;
     },
     async sendPartnerRequest(receiverId, note, proposedDate) {
-      return request<{ id: string }>('/api/gym/community/partner-requests', {
+      return request<{ id: string; notificationStatus: 'sent' | 'unavailable' | 'failed' }>('/api/gym/community/partner-requests', {
         method: 'POST',
         body: JSON.stringify({ receiverId, note, proposedDate }),
       });
     },
     async respondToPartnerRequest(id, status) {
-      return request<{ id: string; status: string }>(`/api/gym/community/partner-requests/${encodeURIComponent(id)}`, {
+      return request<{
+        id: string;
+        status: string;
+        notificationStatus: 'sent' | 'unavailable' | 'failed';
+      }>(`/api/gym/community/partner-requests/${encodeURIComponent(id)}`, {
         method: 'PUT',
         body: JSON.stringify({ status }),
       });
     },
     async registerWithDhbw(input) {
-      await request('/api/gym/register', {
-        method: 'POST',
-        body: JSON.stringify(input),
-      });
+      await registerWithEmailAndPassword(input.email, input.password);
+    },
+    async resendVerificationEmail(email, password) {
+      await resendVerificationEmail(email, password);
     },
     async login(email, password) {
-      await request('/api/gym/login', {
+      await loginWithEmailAndPassword(email, password);
+      await request('/api/gym/auth/link', {
         method: 'POST',
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ legacyPassword: password }),
       });
     },
     async logout() {
-      await request('/api/gym/logout', { method: 'POST' });
+      try {
+        await request('/api/gym/logout', { method: 'POST' });
+      } finally {
+        await logoutFirebase();
+      }
     },
     getAvailability(startAt, durationMinutes) {
       const query = new URLSearchParams({ startAt, durationMinutes: String(durationMinutes) });
@@ -340,13 +389,6 @@ export function createGymRepository(fetcher: FetchLike = fetch): GymRepository {
     async setWeeklyGoal(weeklySessions) {
       await request('/api/gym/goals', { method: 'PUT', body: JSON.stringify({ weeklySessions }) });
     },
-    async issueRecoveryCode() {
-      const result = await request<{ recoveryCode: string }>('/api/gym/profile/recovery-code', { method: 'POST' });
-      return result.recoveryCode;
-    },
-    async recoverProfile(recoveryCode) {
-      await request('/api/gym/profile/recover', { method: 'POST', body: JSON.stringify({ recoveryCode }) });
-    },
     async deletePersonalData() {
       await request('/api/gym/my/data', { method: 'DELETE' });
     },
@@ -354,4 +396,3 @@ export function createGymRepository(fetcher: FetchLike = fetch): GymRepository {
 }
 
 export const gymRepository = createGymRepository();
-

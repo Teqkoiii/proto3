@@ -238,16 +238,20 @@ export function Dashboard({
                   name="Check-ins"
                   stroke="var(--gym-accent)"
                   strokeWidth={2.5}
-                  dot={false}
+                  dot={occupancy.history.points.length === 1 ? { r: 4 } : false}
                   activeDot={{ r: 5 }}
                 />
               </LineChart>
             </ResponsiveContainer>
           </div>
         ) : (
-          <p className="muted-copy history-empty">
-            Noch nicht genügend Verlaufsdaten vorhanden. Der Verlauf füllt sich mit der Zeit.
-          </p>
+          <div
+            className="occupancy-chart occupancy-chart-empty"
+            role="img"
+            aria-label="Leeres Auslastungsdiagramm; noch keine Messdaten vorhanden"
+          >
+            <span>Noch keine Messdaten – das Diagramm füllt sich mit der Zeit.</span>
+          </div>
         )}
 
         {occupancy && (

@@ -7,8 +7,29 @@ service cloud.firestore {
     }
 
     // Helper functions
-    function isSignedIn() {
-      return request.auth != null;
+    function isVerifiedDhbwUser() {
+      return request.auth != null &&
+             request.auth.token.email_verified == true &&
+             request.auth.token.email is string &&
+             request.auth.token.email.lower().matches('^[^@]+@(bad-mergentheim\\.dhbw\\.de|badmergentheim\\.dhbw\\.de|dhbw-mannheim\\.de|dhbw-mosbach\\.de|dhbw-stuttgart\\.de|dhbw\\.de|heilbronn\\.dhbw\\.de|lehre\\.dhbw-mannheim\\.de)$');
+    }
+
+    function canCreateNotification(userId, data) {
+      return data.senderId == request.auth.uid &&
+             data.userId == userId &&
+             (
+               (data.type in ['slot_reminder', 'gym_alert'] && userId == request.auth.uid) ||
+               (
+                 data.type == 'new_message' &&
+                 isValidId(data.resourceId) &&
+                 isValidId(data.eventId) &&
+                 exists(/databases/$(database)/documents/conversations/$(data.resourceId)) &&
+                 request.auth.uid in get(/databases/$(database)/documents/conversations/$(data.resourceId)).data.participantIds &&
+                 userId in get(/databases/$(database)/documents/conversations/$(data.resourceId)).data.participantIds &&
+                 exists(/databases/$(database)/documents/conversations/$(data.resourceId)/messages/$(data.eventId)) &&
+                 get(/databases/$(database)/documents/conversations/$(data.resourceId)/messages/$(data.eventId)).data.senderId == request.auth.uid
+               )
+             );
     }
 
     function incoming() {
@@ -35,23 +56,16 @@ service cloud.firestore {
              (!('preferredTimes' in data) || (data.preferredTimes is list && data.preferredTimes.size() <= 10));
     }
 
-    function isValidPartnerRequest(data) {
-      return data.keys().hasAll(['senderId', 'receiverId', 'status']) &&
-             data.senderId is string && data.senderId.size() <= 128 &&
-             data.receiverId is string && data.receiverId.size() <= 128 &&
-             data.status in ['pending', 'accepted', 'declined', 'cancelled'] &&
-             (!('senderName' in data) || (data.senderName is string && data.senderName.size() <= 60)) &&
-             (!('receiverName' in data) || (data.receiverName is string && data.receiverName.size() <= 60)) &&
-             (!('note' in data) || (data.note is string && data.note.size() <= 300)) &&
-             (!('proposedDate' in data) || (data.proposedDate is string && data.proposedDate.size() <= 40));
-    }
-
     function isValidConversation(data) {
       return data.keys().hasAll(['id', 'participantIds']) &&
              isValidId(data.id) &&
              data.participantIds is list &&
-             data.participantIds.size() >= 1 &&
-             data.participantIds.size() <= 5 &&
+             data.participantIds.size() == 2 &&
+             data.participantIds[0] is string &&
+             data.participantIds[0].size() <= 128 &&
+             data.participantIds[1] is string &&
+             data.participantIds[1].size() <= 128 &&
+             data.participantIds[0] != data.participantIds[1] &&
              (!('lastMessageText' in data) || (data.lastMessageText is string && data.lastMessageText.size() <= 500));
     }
 
@@ -65,9 +79,10 @@ service cloud.firestore {
     }
 
     function isValidNotification(data) {
-      return data.keys().hasAll(['id', 'userId', 'type', 'title', 'message', 'read']) &&
+      return data.keys().hasAll(['id', 'userId', 'senderId', 'type', 'title', 'message', 'read']) &&
              isValidId(data.id) &&
              data.userId is string && data.userId.size() <= 128 &&
+             data.senderId is string && data.senderId.size() <= 128 &&
              data.type in ['partner_request', 'partner_accepted', 'new_message', 'slot_reminder', 'gym_alert'] &&
              data.title is string && data.title.size() <= 120 &&
              data.message is string && data.message.size() <= 300 &&
@@ -81,101 +96,95 @@ service cloud.firestore {
 
     // Community Profiles
     match /community_profiles/{profileId} {
-      allow get: if isSignedIn() && isValidId(profileId);
-      allow list: if isSignedIn();
-      allow create: if isSignedIn() &&
+      allow get: if isVerifiedDhbwUser() &&
+                    isValidId(profileId) &&
+                    (existing().userId == request.auth.uid || existing().isPublicPresence == true);
+      allow list: if isVerifiedDhbwUser() &&
+                     (resource.data.userId == request.auth.uid || resource.data.isPublicPresence == true);
+      allow create: if isVerifiedDhbwUser() &&
                        isValidId(profileId) &&
+                       profileId == request.auth.uid &&
                        incoming().userId == request.auth.uid &&
                        isValidCommunityProfile(incoming());
-      allow update: if isSignedIn() &&
+      allow update: if isVerifiedDhbwUser() &&
                        isValidId(profileId) &&
+                       profileId == request.auth.uid &&
                        existing().userId == request.auth.uid &&
                        incoming().userId == existing().userId &&
                        isValidCommunityProfile(incoming());
-      allow delete: if isSignedIn() && isValidId(profileId) && existing().userId == request.auth.uid;
+      allow delete: if isVerifiedDhbwUser() &&
+                       isValidId(profileId) &&
+                       profileId == request.auth.uid &&
+                       existing().userId == request.auth.uid;
     }
 
     // Training Partner Requests
     match /partner_requests/{requestId} {
-      allow get: if isSignedIn() &&
+      allow get: if isVerifiedDhbwUser() &&
                     isValidId(requestId) &&
                     (resource.data.senderId == request.auth.uid || resource.data.receiverId == request.auth.uid);
-      allow list: if isSignedIn() &&
+      allow list: if isVerifiedDhbwUser() &&
                      (resource.data.senderId == request.auth.uid || resource.data.receiverId == request.auth.uid);
-      allow create: if isSignedIn() &&
-                       isValidId(requestId) &&
-                       incoming().senderId == request.auth.uid &&
-                       isValidPartnerRequest(incoming());
-      allow update: if isSignedIn() &&
-                       isValidId(requestId) &&
-                       isValidPartnerRequest(incoming()) && (
-                         (existing().receiverId == request.auth.uid &&
-                          incoming().diff(existing()).affectedKeys().hasOnly(['status']) &&
-                          incoming().status in ['accepted', 'declined']) ||
-                         (existing().senderId == request.auth.uid &&
-                          incoming().diff(existing()).affectedKeys().hasOnly(['status']) &&
-                          incoming().status == 'cancelled')
-                       );
-      allow delete: if isSignedIn() &&
-                       isValidId(requestId) &&
-                       (existing().senderId == request.auth.uid || existing().receiverId == request.auth.uid);
     }
 
     // Direct Chat Conversations
     match /conversations/{conversationId} {
-      allow get: if isSignedIn() &&
+      allow get: if isVerifiedDhbwUser() &&
                     isValidId(conversationId) &&
+                    isValidConversation(resource.data) &&
                     request.auth.uid in resource.data.participantIds;
-      allow list: if isSignedIn() &&
+      allow list: if isVerifiedDhbwUser() &&
                      request.auth.uid in resource.data.participantIds;
-      allow create: if isSignedIn() &&
+      allow update: if isVerifiedDhbwUser() &&
                        isValidId(conversationId) &&
-                       request.auth.uid in incoming().participantIds &&
-                       isValidConversation(incoming());
-      allow update: if isSignedIn() &&
-                       isValidId(conversationId) &&
+                       isValidConversation(existing()) &&
                        request.auth.uid in existing().participantIds &&
-                       incoming().diff(existing()).affectedKeys().hasOnly(['lastMessageText', 'lastMessageAt', 'lastSenderId']);
+                       isValidConversation(incoming()) &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['lastMessageText', 'lastMessageAt', 'lastSenderId']) &&
+                       incoming().lastSenderId == request.auth.uid;
 
       // Nested Chat Messages
       match /messages/{messageId} {
-        allow get: if isSignedIn() &&
+        allow get: if isVerifiedDhbwUser() &&
                       isValidId(conversationId) &&
                       isValidId(messageId) &&
                       exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
                       request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
-        allow list: if isSignedIn() &&
+        allow list: if isVerifiedDhbwUser() &&
                        isValidId(conversationId) &&
                        exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
                        request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
-        allow create: if isSignedIn() &&
+        allow create: if isVerifiedDhbwUser() &&
                          isValidId(messageId) &&
                          incoming().senderId == request.auth.uid &&
                          incoming().conversationId == conversationId &&
                          isValidChatMessage(incoming()) &&
                          exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
                          request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
-        allow delete: if isSignedIn() &&
+        allow delete: if isVerifiedDhbwUser() &&
                          isValidId(messageId) &&
-                         existing().senderId == request.auth.uid;
+                         existing().senderId == request.auth.uid &&
+                         exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
+                         request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
       }
     }
 
     // User Private Notifications & Slot Reminders
     match /users/{userId}/notifications/{notificationId} {
-      allow get: if isSignedIn() && isValidId(userId) && isValidId(notificationId) && userId == request.auth.uid;
-      allow list: if isSignedIn() && isValidId(userId) && userId == request.auth.uid;
-      allow delete: if isSignedIn() && isValidId(userId) && isValidId(notificationId) && userId == request.auth.uid;
-      allow update: if isSignedIn() &&
+      allow get: if isVerifiedDhbwUser() && isValidId(userId) && isValidId(notificationId) && userId == request.auth.uid;
+      allow list: if isVerifiedDhbwUser() && isValidId(userId) && userId == request.auth.uid;
+      allow delete: if isVerifiedDhbwUser() && isValidId(userId) && isValidId(notificationId) && userId == request.auth.uid;
+      allow update: if isVerifiedDhbwUser() &&
                        isValidId(userId) &&
                        isValidId(notificationId) &&
                        userId == request.auth.uid &&
-                       incoming().diff(existing()).affectedKeys().hasOnly(['read']);
-      allow create: if isSignedIn() &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['read']) &&
+                       incoming().read is bool;
+      allow create: if isVerifiedDhbwUser() &&
                        isValidId(userId) &&
                        isValidId(notificationId) &&
-                       incoming().userId == userId &&
-                       isValidNotification(incoming());
+                       isValidNotification(incoming()) &&
+                       canCreateNotification(userId, incoming());
     }
   }
 }

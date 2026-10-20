@@ -1,12 +1,38 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import test, { type TestContext } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
+import { GymAppRepository } from './gymAppRepository.ts';
 import { createGymAppApi } from './gym-app-api.ts';
+import { hashPassword } from './password.ts';
 
-async function startApi(t: TestContext, options: { secureCookies?: boolean; allowedOrigins?: string[] } = {}) {
+function firebaseToken(uid: string, email = `${uid}@dhbw.de`, emailVerified = true): string {
+  return Buffer.from(JSON.stringify({ uid, email, emailVerified })).toString('base64url');
+}
+
+async function startApi(t: TestContext, options: {
+  secureCookies?: boolean;
+  allowedOrigins?: string[];
+  firebaseTokenVerifier?: (token: string) => Promise<{ uid: string; email: string | null; emailVerified: boolean }>;
+} = {}) {
   const database = new DatabaseSync(':memory:');
-  const server = createServer(createGymAppApi(database, { secureCookies: options.secureCookies ?? false, allowedOrigins: options.allowedOrigins }));
+  const server = createServer(createGymAppApi(database, {
+    secureCookies: options.secureCookies ?? false,
+    allowedOrigins: options.allowedOrigins,
+    firebaseTokenVerifier: options.firebaseTokenVerifier ?? (async (token) => {
+      if (token === 'revoked-token') throw new Error('token has been revoked');
+      try {
+        return JSON.parse(Buffer.from(token, 'base64url').toString('utf8')) as {
+          uid: string;
+          email: string | null;
+          emailVerified: boolean;
+        };
+      } catch {
+        throw new Error('invalid fake token');
+      }
+    }),
+  }));
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
   assert.ok(address && typeof address !== 'string');
@@ -14,33 +40,59 @@ async function startApi(t: TestContext, options: { secureCookies?: boolean; allo
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     database.close();
   });
-  return { baseUrl: `http://127.0.0.1:${address.port}` };
+  return { baseUrl: `http://127.0.0.1:${address.port}`, database };
 }
 
-async function createAnonymousClient(baseUrl: string) {
-  const response = await fetch(`${baseUrl}/api/gym/session`);
-  assert.equal(response.status, 200);
-  const session = await response.json() as Record<string, unknown>;
-  assert.equal(session.identity, 'anonymous-app-profile');
+async function createAuthenticatedClient(baseUrl: string, uid: string, options: { email?: string; cookie?: string; legacyPassword?: string } = {}) {
+  const token = firebaseToken(uid, options.email ?? `${uid}@dhbw.de`);
+  const linkResponse = await fetch(`${baseUrl}/api/gym/auth/link`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
+      ...(options.cookie ? { cookie: options.cookie } : {}),
+    },
+    body: JSON.stringify(options.legacyPassword ? { legacyPassword: options.legacyPassword } : {}),
+  });
+  assert.equal(linkResponse.status, 200);
+  const session = await linkResponse.json() as Record<string, unknown>;
+  assert.equal(session.identity, 'firebase-account');
   assert.equal('principalId' in session, false, 'server profile IDs must not be exposed to the browser');
-  const cookie = response.headers.get('set-cookie')?.split(';', 1)[0];
-  assert.ok(cookie, 'server should establish an HttpOnly app session');
   return {
-    cookie,
+    token,
     async request(path: string, init: RequestInit = {}) {
       return fetch(`${baseUrl}${path}`, {
         ...init,
-        headers: { cookie, ...(init.body ? { 'content-type': 'application/json' } : {}), ...init.headers },
+        headers: {
+          authorization: `Bearer ${token}`,
+          ...(init.body ? { 'content-type': 'application/json' } : {}),
+          ...init.headers,
+        },
       });
     },
   };
 }
 
+async function createLegacyProfile(database: DatabaseSync, options: { email?: string; password?: string } = {}) {
+  const token = 'a'.repeat(64);
+  const now = new Date().toISOString();
+  const repository = new GymAppRepository(database);
+  const principalId = repository.createAnonymousPrincipal(
+    createHash('sha256').update(token).digest('hex'),
+    now,
+    new Date(Date.now() + 86_400_000).toISOString(),
+  );
+  if (options.email && options.password) {
+    repository.createLocalCredentials(principalId, options.email, await hashPassword(options.password), now);
+  }
+  return { token, principalId, repository };
+}
+
 test('manual check-in is shared, idempotent, and scoped to the server session', async (t) => {
   const { baseUrl } = await startApi(t);
   assert.equal((await fetch(`${baseUrl}/api/gym/check-in`, { method: 'POST' })).status, 401);
-  const first = await createAnonymousClient(baseUrl);
-  const second = await createAnonymousClient(baseUrl);
+  const first = await createAuthenticatedClient(baseUrl, 'first');
+  const second = await createAuthenticatedClient(baseUrl, 'second');
 
   assert.equal((await first.request('/api/gym/occupancy').then((response) => response.json()) as { count: number }).count, 0);
   const firstCheckIn = await first.request('/api/gym/check-in', { method: 'POST' });
@@ -61,8 +113,8 @@ test('manual check-in is shared, idempotent, and scoped to the server session', 
 
 test('reservations are shared as aggregate slots, never limited by capacity, and private records cannot be accessed across profiles', async (t) => {
   const { baseUrl } = await startApi(t);
-  const owner = await createAnonymousClient(baseUrl);
-  const other = await createAnonymousClient(baseUrl);
+  const owner = await createAuthenticatedClient(baseUrl, 'booking-owner');
+  const other = await createAuthenticatedClient(baseUrl, 'booking-other');
   const startsAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
   const created = await owner.request('/api/gym/bookings', {
@@ -93,10 +145,10 @@ test('reservations are shared as aggregate slots, never limited by capacity, and
   })).status, 409, 'only the same profile booking the identical slot twice is a duplicate');
 });
 
-test('workouts and goals persist per anonymous profile and can be deleted by their owner', async (t) => {
+test('workouts and goals persist per Firebase profile and can be deleted by their owner', async (t) => {
   const { baseUrl } = await startApi(t);
-  const owner = await createAnonymousClient(baseUrl);
-  const other = await createAnonymousClient(baseUrl);
+  const owner = await createAuthenticatedClient(baseUrl, 'workout-owner');
+  const other = await createAuthenticatedClient(baseUrl, 'workout-other');
   const workout = {
     title: 'Ganzkörper',
     occurredAt: new Date().toISOString(),
@@ -117,53 +169,325 @@ test('workouts and goals persist per anonymous profile and can be deleted by the
   assert.equal((await owner.request('/api/gym/workouts').then((response) => response.json()) as { workouts: unknown[] }).workouts.length, 0);
 });
 
-test('recovery code restores the same server profile once and rotates the active session', async (t) => {
+test('valid, missing, invalid, and revoked Firebase tokens are handled securely', async (t) => {
   const { baseUrl } = await startApi(t);
-  const original = await createAnonymousClient(baseUrl);
-  await original.request('/api/gym/check-in', { method: 'POST' });
-  const createdWorkout = await original.request('/api/gym/workouts', {
-    method: 'POST',
-    body: JSON.stringify({
-      title: 'Zugtag',
-      occurredAt: new Date().toISOString(),
-      exercises: [{ name: 'Rudern', sets: [{ reps: 10, weightKg: 30 }] }],
-    }),
+  const validToken = firebaseToken('valid-user');
+  const requestWithToken = (token: string) => fetch(`${baseUrl}/api/gym/session`, {
+    headers: { authorization: `Bearer ${token}` },
   });
-  assert.equal(createdWorkout.status, 201);
+  assert.equal((await requestWithToken(validToken)).status, 200);
+  assert.equal((await fetch(`${baseUrl}/api/gym/session`)).status, 401);
+  assert.equal((await requestWithToken('not-a-token')).status, 401);
+  assert.equal((await requestWithToken('revoked-token')).status, 401);
+});
 
-  const recoveryResponse = await original.request('/api/gym/profile/recovery-code', { method: 'POST' });
-  assert.equal(recoveryResponse.status, 200);
-  const recoveryCode = (await recoveryResponse.json() as { recoveryCode: string }).recoveryCode;
-  assert.match(recoveryCode, /^[A-Za-z0-9_-]{43}$/);
-
-  const recoveredResponse = await fetch(`${baseUrl}/api/gym/profile/recover`, {
+test('concurrent first-time Firebase requests resolve to one stable principal', async (t) => {
+  const { baseUrl, database } = await startApi(t);
+  const token = firebaseToken('concurrent-user');
+  const link = () => fetch(`${baseUrl}/api/gym/auth/link`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ recoveryCode }),
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({}),
   });
-  assert.equal(recoveredResponse.status, 200);
-  const recoveredCookie = recoveredResponse.headers.get('set-cookie')?.split(';', 1)[0];
-  assert.ok(recoveredCookie);
-  const recovered = {
-    request: (path: string, init: RequestInit = {}) => fetch(`${baseUrl}${path}`, {
-      ...init,
-      headers: { cookie: recoveredCookie, ...(init.body ? { 'content-type': 'application/json' } : {}), ...init.headers },
-    }),
+  const responses = await Promise.all([link(), link()]);
+  assert.deepEqual(responses.map((response) => response.status), [200, 200]);
+  const repository = new GymAppRepository(database);
+  const principal = repository.findPrincipalForVerifiedAccount('firebase', 'concurrent-user');
+  assert.ok(principal);
+  assert.equal(
+    (database.prepare('SELECT COUNT(*) AS count FROM gym_principals WHERE account_id = (SELECT id FROM gym_accounts WHERE provider = ? AND subject = ?)').get('firebase', 'concurrent-user') as { count: number }).count,
+    1,
+  );
+});
+
+test('Firebase identity must have a verified email on an allowed DHBW domain', async (t) => {
+  const { baseUrl } = await startApi(t);
+  const unverified = await fetch(`${baseUrl}/api/gym/session`, {
+    headers: { authorization: `Bearer ${firebaseToken('unverified', 'unverified@dhbw.de', false)}` },
+  });
+  assert.equal(unverified.status, 403);
+  const wrongDomain = await fetch(`${baseUrl}/api/gym/session`, {
+    headers: { authorization: `Bearer ${firebaseToken('external', 'user@example.com')}` },
+  });
+  assert.equal(wrongDomain.status, 403);
+  const lookalikeDomain = await fetch(`${baseUrl}/api/gym/session`, {
+    headers: { authorization: `Bearer ${firebaseToken('lookalike', 'user@dhbw-attacker.de')}` },
+  });
+  assert.equal(lookalikeDomain.status, 403);
+});
+
+test('legacy cookies cannot authenticate protected routes and recovery codes cannot sign in', async (t) => {
+  const { baseUrl } = await startApi(t);
+  const cookie = `gym_app_session=${'b'.repeat(64)}`;
+  const protectedRoutes: Array<{ method: string; path: string; body?: unknown }> = [
+    { method: 'GET', path: '/api/gym/session' },
+    { method: 'POST', path: '/api/gym/logout' },
+    { method: 'POST', path: '/api/gym/check-in' },
+    { method: 'POST', path: '/api/gym/check-out' },
+    { method: 'GET', path: '/api/gym/calendar/events' },
+    { method: 'GET', path: '/api/gym/profile/community' },
+    { method: 'PUT', path: '/api/gym/profile/community', body: {} },
+    { method: 'GET', path: '/api/gym/community/members' },
+    { method: 'GET', path: '/api/gym/community/partner-requests' },
+    { method: 'POST', path: '/api/gym/community/partner-requests', body: {} },
+    { method: 'PUT', path: '/api/gym/community/partner-requests/request-id', body: {} },
+    { method: 'GET', path: '/api/gym/my/bookings' },
+    { method: 'POST', path: '/api/gym/bookings', body: {} },
+    { method: 'PUT', path: '/api/gym/my/bookings/booking-id', body: {} },
+    { method: 'DELETE', path: '/api/gym/my/bookings/booking-id' },
+    { method: 'GET', path: '/api/gym/visits' },
+    { method: 'GET', path: '/api/gym/workouts' },
+    { method: 'POST', path: '/api/gym/workouts', body: {} },
+    { method: 'DELETE', path: '/api/gym/workouts/workout-id' },
+    { method: 'GET', path: '/api/gym/plans' },
+    { method: 'POST', path: '/api/gym/plans', body: {} },
+    { method: 'PUT', path: '/api/gym/plans/plan-id', body: {} },
+    { method: 'DELETE', path: '/api/gym/plans/plan-id' },
+    { method: 'GET', path: '/api/gym/goals' },
+    { method: 'PUT', path: '/api/gym/goals', body: {} },
+    { method: 'POST', path: '/api/gym/profile/recover', body: { recoveryCode: 'A'.repeat(43) } },
+    { method: 'DELETE', path: '/api/gym/my/data' },
+  ];
+  for (const route of protectedRoutes) {
+    const headers: Record<string, string> = { cookie };
+    if (route.body) headers['content-type'] = 'application/json';
+    const response = await fetch(`${baseUrl}${route.path}`, {
+      method: route.method,
+      headers,
+      ...(route.body ? { body: JSON.stringify(route.body) } : {}),
+    });
+    assert.equal(response.status, 401, `${route.method} ${route.path} must reject cookie-only access`);
+  }
+
+  const linkWithoutToken = await fetch(`${baseUrl}/api/gym/auth/link`, { method: 'POST', body: '{}' });
+  assert.equal(linkWithoutToken.status, 401);
+  assert.equal((await fetch(`${baseUrl}/api/gym/profile/recovery-code`, { method: 'POST' })).status, 404);
+  for (const path of ['/api/gym/register', '/api/gym/login']) {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'legacy@dhbw.de', password: 'old-password' }),
+    });
+    assert.equal(response.status, 410, `${path} must remain disabled`);
+    assert.equal(response.headers.get('set-cookie'), null);
+  }
+
+  const client = await createAuthenticatedClient(baseUrl, 'recovery-user');
+  const recover = await client.request('/api/gym/profile/recover', {
+    method: 'POST',
+    body: JSON.stringify({ recoveryCode: 'A'.repeat(43) }),
+  });
+  assert.equal(recover.status, 410);
+  assert.equal(recover.headers.get('set-cookie'), null);
+});
+
+test('legacy profiles migrate only with a matching legacy session or previous password', async (t) => {
+  const { baseUrl, database } = await startApi(t);
+  const email = 'existing@dhbw.de';
+  const previousPassword = 'previous-password';
+  const legacy = await createLegacyProfile(database, { email, password: previousPassword });
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const bookingStart = new Date(now.getTime() + 7 * 86_400_000).toISOString();
+  legacy.repository.createWorkout(legacy.principalId, {
+    id: 'migration-workout',
+    title: 'Existing workout',
+    occurredAt: nowIso,
+    notes: '',
+    exercises: [{ name: 'Squat', sets: [{ reps: 5, weightKg: 80 }] }],
+  }, nowIso);
+  legacy.repository.createTrainingPlan(legacy.principalId, {
+    id: 'migration-plan',
+    name: 'Existing plan',
+    notes: 'Keep this plan',
+    exercises: [{ name: 'Deadlift', targetSets: 3, targetReps: 5, targetWeightKg: 90 }],
+  }, nowIso);
+  legacy.repository.upsertCommunityProfile({
+    principalId: legacy.principalId,
+    firstName: 'Existing',
+    lastNameInitial: 'P',
+    courseOfStudy: 'Informatik',
+    trainingGoals: ['strength'],
+    preferredTimes: ['morning'],
+    interests: ['lifting'],
+    bio: 'Existing profile',
+    isPublicPresence: true,
+    updatedAt: nowIso,
+  });
+  legacy.repository.setWeeklyGoal(legacy.principalId, 5, nowIso);
+  legacy.repository.createBooking(legacy.principalId, {
+    id: 'migration-booking',
+    startsAt: bookingStart,
+    endsAt: new Date(Date.parse(bookingStart) + 60 * 60_000).toISOString(),
+    title: 'Existing booking',
+    entryType: 'reservation',
+  }, nowIso);
+  legacy.repository.checkIn(
+    legacy.principalId,
+    nowIso,
+    new Date(now.getTime() + 8 * 60 * 60_000).toISOString(),
+  );
+  const token = firebaseToken('existing-firebase-uid', email);
+
+  const emailOnly = await fetch(`${baseUrl}/api/gym/auth/link`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ principalId: legacy.principalId }),
+  });
+  assert.equal(emailOnly.status, 409, 'an email match or client principalId is not proof of ownership');
+  const suppliedPrincipal = await fetch(`${baseUrl}/api/gym/auth/link`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${firebaseToken('unrelated-user', 'unrelated@dhbw.de')}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ principalId: legacy.principalId }),
+  });
+  assert.equal(suppliedPrincipal.status, 200);
+  const storedPrincipal = legacy.repository.findPrincipalForVerifiedAccount('firebase', 'unrelated-user');
+  assert.notEqual(storedPrincipal, legacy.principalId, 'the server must ignore client-supplied principalId');
+  const invalidProof = await fetch(`${baseUrl}/api/gym/auth/link`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ legacyPassword: 'wrong-password' }),
+  });
+  assert.equal(invalidProof.status, 401);
+
+  const linked = await createAuthenticatedClient(baseUrl, 'existing-firebase-uid', { email, legacyPassword: previousPassword });
+  assert.equal((await linked.request('/api/gym/workouts').then((response) => response.json()) as { workouts: Array<{ id: string }> }).workouts[0]?.id, 'migration-workout');
+  assert.equal((await linked.request('/api/gym/plans').then((response) => response.json()) as { plans: Array<{ id: string; name: string }> }).plans[0]?.id, 'migration-plan');
+  const migratedProfile = await linked.request('/api/gym/profile/community').then((response) => response.json()) as {
+    profile: { firstName: string; bio: string };
   };
-
-  assert.equal((await recovered.request('/api/gym/session').then((response) => response.json()) as { checkedInAt: string | null }).checkedInAt !== null, true);
-  assert.equal((await recovered.request('/api/gym/workouts').then((response) => response.json()) as { workouts: unknown[] }).workouts.length, 1);
-  assert.equal((await original.request('/api/gym/workouts')).status, 401);
-  assert.equal((await fetch(`${baseUrl}/api/gym/profile/recover`, {
+  assert.equal(migratedProfile.profile.firstName, 'Existing');
+  assert.equal(migratedProfile.profile.bio, 'Existing profile');
+  assert.equal((await linked.request('/api/gym/my/bookings').then((response) => response.json()) as { bookings: Array<{ id: string }> }).bookings[0]?.id, 'migration-booking');
+  assert.equal((await linked.request('/api/gym/visits').then((response) => response.json()) as { visits: unknown[] }).visits.length, 1);
+  assert.equal((await linked.request('/api/gym/goals').then((response) => response.json()) as { weeklySessions: number }).weeklySessions, 5);
+  assert.equal((await linked.request('/api/gym/session').then((response) => response.json()) as { checkedInAt: string | null }).checkedInAt, nowIso);
+  assert.equal((await fetch(`${baseUrl}/api/gym/auth/link`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ recoveryCode }),
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ legacyPassword: previousPassword }),
+  })).status, 200, 'a linked Firebase UID resolves to the same profile on subsequent requests');
+  const duplicateIdentity = await fetch(`${baseUrl}/api/gym/auth/link`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${firebaseToken('second-firebase-uid', email)}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ legacyPassword: previousPassword }),
+  });
+  assert.equal(duplicateIdentity.status, 409, 'an existing profile cannot be reassigned to a second Firebase UID');
+});
+
+test('a legacy session cannot link a Firebase account with a different email', async (t) => {
+  const { baseUrl, database } = await startApi(t);
+  const legacy = await createLegacyProfile(database, { email: 'old-address@dhbw.de', password: 'previous-password' });
+  const response = await fetch(`${baseUrl}/api/gym/auth/link`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${firebaseToken('different-email-uid', 'new-address@dhbw.de')}`,
+      cookie: `gym_app_session=${legacy.token}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({}),
+  });
+  assert.equal(response.status, 403);
+  assert.equal(legacy.repository.findPrincipalForVerifiedAccount('firebase', 'different-email-uid'), undefined);
+  assert.ok(legacy.repository.findSession(
+    createHash('sha256').update(legacy.token).digest('hex'),
+    new Date().toISOString(),
+  ), 'a failed linking attempt must not consume the legacy session');
+});
+
+test('parallel attempts cannot link one legacy profile to two Firebase identities', async (t) => {
+  const { baseUrl, database } = await startApi(t);
+  const email = 'parallel-link@dhbw.de';
+  const legacy = await createLegacyProfile(database, { email, password: 'previous-password' });
+  const link = (uid: string) => fetch(`${baseUrl}/api/gym/auth/link`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${firebaseToken(uid, email)}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ legacyPassword: 'previous-password' }),
+  });
+
+  const responses = await Promise.all([link('parallel-uid-one'), link('parallel-uid-two')]);
+  assert.deepEqual(responses.map((response) => response.status).sort(), [200, 409]);
+  assert.equal(
+    (database.prepare('SELECT COUNT(*) AS count FROM gym_accounts WHERE provider = ?').get('firebase') as { count: number }).count,
+    1,
+    'only one Firebase account may claim the legacy principal',
+  );
+  assert.ok(legacy.repository.findPrincipalForVerifiedAccount('firebase', 'parallel-uid-one') ||
+    legacy.repository.findPrincipalForVerifiedAccount('firebase', 'parallel-uid-two'));
+});
+
+test('a valid previous session can migrate its own profile without enabling cookie fallback', async (t) => {
+  const { baseUrl, database } = await startApi(t);
+  const legacy = await createLegacyProfile(database);
+  const secondLegacyToken = 'd'.repeat(64);
+  legacy.repository.createSession(
+    createHash('sha256').update(secondLegacyToken).digest('hex'),
+    legacy.principalId,
+    new Date().toISOString(),
+    new Date(Date.now() + 86_400_000).toISOString(),
+  );
+  legacy.repository.createWorkout(legacy.principalId, {
+    id: 'session-migration-workout',
+    title: 'Session workout',
+    occurredAt: new Date().toISOString(),
+    notes: '',
+    exercises: [{ name: 'Row', sets: [{ reps: 8, weightKg: 40 }] }],
+  }, new Date().toISOString());
+  const token = firebaseToken('session-migration', 'session-migration@dhbw.de');
+  const cookie = `gym_app_session=${legacy.token}`;
+  assert.equal((await fetch(`${baseUrl}/api/gym/workouts`, { headers: { cookie } })).status, 401);
+  const linked = await fetch(`${baseUrl}/api/gym/auth/link`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${token}`,
+      cookie,
+    },
+  });
+  assert.equal(linked.status, 200);
+  assert.match(linked.headers.get('set-cookie') ?? '', /Max-Age=0/);
+  assert.equal(legacy.repository.findSession(
+    createHash('sha256').update(legacy.token).digest('hex'),
+    new Date().toISOString(),
+  ), undefined, 'a migrated legacy session is retired');
+  assert.equal(legacy.repository.findSession(
+    createHash('sha256').update(secondLegacyToken).digest('hex'),
+    new Date().toISOString(),
+  ), undefined, 'all legacy sessions for the migrated profile are retired');
+  const client = {
+    request: (path: string) => fetch(`${baseUrl}${path}`, { headers: { authorization: `Bearer ${token}` } }),
+  };
+  assert.equal((await client.request('/api/gym/workouts').then((response) => response.json()) as { workouts: Array<{ id: string }> }).workouts[0]?.id, 'session-migration-workout');
+  const activeSessionToken = 'c'.repeat(64);
+  legacy.repository.createSession(
+    createHash('sha256').update(activeSessionToken).digest('hex'),
+    legacy.principalId,
+    new Date().toISOString(),
+    new Date(Date.now() + 86_400_000).toISOString(),
+  );
+  const logout = await fetch(`${baseUrl}/api/gym/logout`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}`, cookie: `gym_app_session=${activeSessionToken}` },
+  });
+  assert.equal(logout.status, 204);
+  assert.match(logout.headers.get('set-cookie') ?? '', /Max-Age=0/);
+  assert.equal(legacy.repository.findSession(
+    createHash('sha256').update(activeSessionToken).digest('hex'),
+    new Date().toISOString(),
+  ), undefined);
+  assert.equal((await fetch(`${baseUrl}/api/gym/workouts`, {
+    headers: { cookie: `gym_app_session=${activeSessionToken}` },
   })).status, 401);
 });
 
 test('availability never reports a capacity or place limit', async (t) => {
   const { baseUrl } = await startApi(t);
-  const client = await createAnonymousClient(baseUrl);
+  const client = await createAuthenticatedClient(baseUrl, 'availability-user');
   const startsAt = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString();
   const query = new URLSearchParams({ startAt: startsAt, durationMinutes: '60' });
   const availability = await client.request(`/api/gym/availability?${query}`).then((response) => response.json()) as {
@@ -174,20 +498,28 @@ test('availability never reports a capacity or place limit', async (t) => {
   assert.equal(availability.availablePlaces, null);
 });
 
-test('cross-origin mobile API access requires an exact allowlist and secure cookies', async (t) => {
+test('cross-origin preflight allows Firebase bearer authorization for exact origins', async (t) => {
   const allowedOrigin = 'capacitor://localhost';
   const { baseUrl } = await startApi(t, { secureCookies: true, allowedOrigins: [allowedOrigin] });
-  const session = await fetch(`${baseUrl}/api/gym/session`, { headers: { Origin: allowedOrigin } });
+  const token = firebaseToken('cors-user');
+  const session = await fetch(`${baseUrl}/api/gym/session`, {
+    headers: { Origin: allowedOrigin, authorization: `Bearer ${token}` },
+  });
   assert.equal(session.status, 200);
   assert.equal(session.headers.get('access-control-allow-origin'), allowedOrigin);
   assert.equal(session.headers.get('access-control-allow-credentials'), 'true');
-  assert.match(session.headers.get('set-cookie') ?? '', /HttpOnly; SameSite=None; Path=\/; Max-Age=\d+; Secure/);
+  assert.equal(session.headers.get('set-cookie'), null);
 
   const preflight = await fetch(`${baseUrl}/api/gym/check-in`, {
     method: 'OPTIONS',
-    headers: { Origin: allowedOrigin, 'Access-Control-Request-Method': 'POST' },
+    headers: {
+      Origin: allowedOrigin,
+      'Access-Control-Request-Method': 'POST',
+      'Access-Control-Request-Headers': 'authorization, content-type',
+    },
   });
   assert.equal(preflight.status, 204);
+  assert.match(preflight.headers.get('access-control-allow-headers') ?? '', /Authorization/i);
 
   const rejected = await fetch(`${baseUrl}/api/gym/check-in`, {
     method: 'POST',
@@ -196,24 +528,22 @@ test('cross-origin mobile API access requires an exact allowlist and secure cook
   assert.equal(rejected.status, 403);
 });
 
-test('profile recovery attempts are rate limited', async (t) => {
+test('recovery code cannot establish a session even when a valid Firebase session exists', async (t) => {
   const { baseUrl } = await startApi(t);
-  const statuses: number[] = [];
-  for (let attempt = 0; attempt < 6; attempt += 1) {
-    const response = await fetch(`${baseUrl}/api/gym/profile/recover`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ recoveryCode: 'A'.repeat(43) }),
-    });
-    statuses.push(response.status);
-  }
-  assert.deepEqual(statuses, [401, 401, 401, 401, 401, 429]);
+  const client = await createAuthenticatedClient(baseUrl, 'recovery-bypass-user');
+  const response = await client.request('/api/gym/profile/recover', {
+    method: 'POST',
+    body: JSON.stringify({ recoveryCode: 'A'.repeat(43) }),
+  });
+  assert.equal(response.status, 410);
+  assert.equal(response.headers.get('set-cookie'), null);
+  assert.equal((await client.request('/api/gym/profile/recovery-code', { method: 'POST' })).status, 404);
 });
 
 test('booking updates are owner-scoped and reject invalid or unauthenticated payloads', async (t) => {
   const { baseUrl } = await startApi(t);
-  const owner = await createAnonymousClient(baseUrl);
-  const other = await createAnonymousClient(baseUrl);
+  const owner = await createAuthenticatedClient(baseUrl, 'booking-update-owner');
+  const other = await createAuthenticatedClient(baseUrl, 'booking-update-other');
   const createdAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
   const created = await owner.request('/api/gym/bookings', {

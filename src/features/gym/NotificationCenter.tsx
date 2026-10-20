@@ -15,7 +15,6 @@ import type { GymPage } from './components';
 export function NotificationCenter({
   notifications,
   isCloudConnected = false,
-  onLoginWithGoogle,
   onMarkRead,
   onMarkAllRead,
   onTriggerTestSlotReminder,
@@ -24,7 +23,6 @@ export function NotificationCenter({
 }: {
   notifications: CloudNotification[];
   isCloudConnected?: boolean;
-  onLoginWithGoogle?: () => void;
   onMarkRead: (id: string) => void;
   onMarkAllRead: () => void;
   onTriggerTestSlotReminder: () => void;
@@ -109,15 +107,18 @@ export function NotificationCenter({
             </div>
           </div>
 
-          {!isCloudConnected && onLoginWithGoogle && (
+          {!isCloudConnected && (
             <div className="notification-cloud-banner">
-              <span>Cloud-Sync inaktiv</span>
+              <span>Für Cloud-Sync mit deinem DHBW-Konto anmelden.</span>
               <button
                 type="button"
                 className="cloud-login-btn"
-                onClick={onLoginWithGoogle}
+                onClick={() => {
+                  setIsOpen(false);
+                  onNavigate('profile');
+                }}
               >
-                Mit Google anmelden
+                Zum Profil
               </button>
             </div>
           )}
@@ -151,7 +152,7 @@ export function NotificationCenter({
                   n.type === 'slot_reminder' ? (
                     <Calendar size={15} className="text-cyan-400" />
                   ) : n.type === 'new_message' ? (
-                    <MessageSquare size={15} className="text-emerald-400" />
+                    <MessageSquare size={15} className="text-red-400" />
                   ) : n.type === 'partner_accepted' ? (
                     <UserCheck size={15} className="text-violet-400" />
                   ) : (

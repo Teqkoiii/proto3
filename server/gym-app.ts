@@ -3,6 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createGymAppApi } from './gym-app-api.ts';
+import { writeCommunityConversation, writePartnerNotification } from './firebaseNotifications.ts';
 
 const port = Number(process.env.GYM_APP_API_PORT ?? 4001);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('GYM_APP_API_PORT must be a valid TCP port');
@@ -17,6 +18,8 @@ const app = createGymAppApi(database, {
   secureCookies: process.env.NODE_ENV === 'production',
   allowedOrigins,
   maxCheckInHours,
+  communityConversationWriter: writeCommunityConversation,
+  partnerNotificationWriter: writePartnerNotification,
 });
 
 app.listen(port, '127.0.0.1', () => {

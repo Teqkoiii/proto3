@@ -265,6 +265,17 @@ export class GymAppRepository {
     this.database.prepare('DELETE FROM app_sessions WHERE session_hash = ?').run(sessionHash);
   }
 
+  consumeSessionForPrincipal(sessionHash: string, principalId: string, nowIso: string): boolean {
+    return this.database.prepare(`
+      DELETE FROM app_sessions
+      WHERE session_hash = ? AND principal_id = ? AND expires_at > ?
+    `).run(sessionHash, principalId, nowIso).changes > 0;
+  }
+
+  deleteSessionsForPrincipal(principalId: string): void {
+    this.database.prepare('DELETE FROM app_sessions WHERE principal_id = ?').run(principalId);
+  }
+
   createAnonymousPrincipal(sessionHash: string, nowIso: string, expiresAt: string): string {
     const principalId = randomUUID();
     this.database.prepare('INSERT INTO gym_principals(id, created_at) VALUES (?, ?)').run(principalId, nowIso);
@@ -289,6 +300,62 @@ export class GymAppRepository {
     `).get(emailNormalized) as { principalId: string; passwordHash: string } | undefined;
   }
 
+  findPrincipalForVerifiedAccount(provider: string, verifiedSubject: string): string | undefined {
+    const row = this.database.prepare(`
+      SELECT principal.id AS principalId
+      FROM gym_accounts AS account
+      JOIN gym_principals AS principal ON principal.account_id = account.id
+      WHERE account.provider = ? AND account.subject = ?
+    `).get(provider, verifiedSubject) as { principalId: string } | undefined;
+    return row?.principalId;
+  }
+
+  findFirebaseUidForPrincipal(principalId: string): string | undefined {
+    const row = this.database.prepare(`
+      SELECT account.subject AS uid
+      FROM gym_principals AS principal
+      JOIN gym_accounts AS account ON account.id = principal.account_id
+      WHERE principal.id = ? AND account.provider = 'firebase'
+    `).get(principalId) as { uid: string } | undefined;
+    return row?.uid;
+  }
+
+  createOrGetFirebasePrincipal(verifiedSubject: string, nowIso: string): string {
+    this.database.exec('BEGIN IMMEDIATE');
+    try {
+      const linked = this.database.prepare(`
+        SELECT principal.id AS principalId
+        FROM gym_accounts AS account
+        JOIN gym_principals AS principal ON principal.account_id = account.id
+        WHERE account.provider = 'firebase' AND account.subject = ?
+      `).get(verifiedSubject) as { principalId: string } | undefined;
+      if (linked) {
+        this.database.exec('COMMIT');
+        return linked.principalId;
+      }
+
+      const existingAccount = this.database.prepare(
+        "SELECT id FROM gym_accounts WHERE provider = 'firebase' AND subject = ?",
+      ).get(verifiedSubject) as { id: string } | undefined;
+      const accountId = existingAccount?.id ?? randomUUID();
+      if (!existingAccount) {
+        this.database.prepare(
+          'INSERT INTO gym_accounts(id, provider, subject, created_at) VALUES (?, ?, ?, ?)',
+        ).run(accountId, 'firebase', verifiedSubject, nowIso);
+      }
+
+      const principalId = randomUUID();
+      this.database.prepare(
+        'INSERT INTO gym_principals(id, account_id, created_at) VALUES (?, ?, ?)',
+      ).run(principalId, accountId, nowIso);
+      this.database.exec('COMMIT');
+      return principalId;
+    } catch (error) {
+      this.database.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
   createLocalCredentials(principalId: string, emailNormalized: string, passwordHash: string, nowIso: string): void {
     this.database.prepare('INSERT INTO gym_local_credentials(principal_id, email_normalized, password_hash, created_at) VALUES (?, ?, ?, ?)')
       .run(principalId, emailNormalized, passwordHash, nowIso);
@@ -298,7 +365,13 @@ export class GymAppRepository {
     return Boolean(this.database.prepare('SELECT 1 FROM gym_local_credentials WHERE email_normalized = ?').get(emailNormalized));
   }
 
-  linkAnonymousProfileToVerifiedAccount(principalId: string, provider: string, verifiedSubject: string, nowIso: string): string {
+  linkAnonymousProfileToVerifiedAccount(
+    principalId: string,
+    provider: string,
+    verifiedSubject: string,
+    nowIso: string,
+    sessionProofHash?: string,
+  ): string {
     if (!provider || provider.length > 40 || !verifiedSubject || verifiedSubject.length > 255) {
       throw new Error('verified identity is invalid');
     }
@@ -307,6 +380,9 @@ export class GymAppRepository {
       const principal = this.database.prepare('SELECT account_id FROM gym_principals WHERE id = ?')
         .get(principalId) as { account_id: string | null } | undefined;
       if (!principal) throw new Error('anonymous profile does not exist');
+      if (sessionProofHash && !this.consumeSessionForPrincipal(sessionProofHash, principalId, nowIso)) {
+        throw new Error('legacy session is invalid or expired');
+      }
       const existingAccount = this.database.prepare('SELECT id FROM gym_accounts WHERE provider = ? AND subject = ?')
         .get(provider, verifiedSubject) as { id: string } | undefined;
       const accountId = existingAccount?.id ?? randomUUID();
@@ -323,6 +399,7 @@ export class GymAppRepository {
         throw new Error('verified account is already linked to another profile');
       }
       this.database.prepare('UPDATE gym_principals SET account_id = ? WHERE id = ?').run(accountId, principalId);
+      this.deleteSessionsForPrincipal(principalId);
       this.database.exec('COMMIT');
       return accountId;
     } catch (error) {
@@ -714,8 +791,9 @@ export class GymAppRepository {
              (SELECT 1 FROM manual_check_ins m WHERE m.principal_id = cp.principal_id AND m.expires_at > ?) AS isActive,
              (SELECT r.starts_at FROM gym_reservations r WHERE r.principal_id = cp.principal_id AND r.status = 'planned' AND r.starts_at > ? ORDER BY r.starts_at ASC LIMIT 1) AS nextPlanned
       FROM community_profiles cp
+      WHERE cp.is_public_presence = 1 OR cp.principal_id = ?
       ORDER BY cp.updated_at DESC
-    `).all(nowIso, nowIso) as Array<{
+    `).all(nowIso, nowIso, currentPrincipalId) as Array<{
       principalId: string;
       firstName: string;
       lastNameInitial: string;
@@ -907,6 +985,56 @@ export class GymAppRepository {
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     }));
+  }
+
+  getPartnerRequestNotificationContext(id: string): {
+    id: string;
+    senderId: string;
+    receiverId: string;
+    status: 'pending' | 'accepted' | 'declined' | 'cancelled';
+    senderName: string;
+    receiverName: string;
+  } | undefined {
+    const row = this.database.prepare(`
+      SELECT r.id, r.sender_id AS senderId, r.receiver_id AS receiverId, r.status,
+             sp.first_name AS senderFirst, sp.last_name_initial AS senderInitial,
+             rp.first_name AS receiverFirst, rp.last_name_initial AS receiverInitial
+      FROM training_partner_requests AS r
+      LEFT JOIN community_profiles AS sp ON sp.principal_id = r.sender_id
+      LEFT JOIN community_profiles AS rp ON rp.principal_id = r.receiver_id
+      WHERE r.id = ?
+    `).get(id) as {
+      id: string;
+      senderId: string;
+      receiverId: string;
+      status: 'pending' | 'accepted' | 'declined' | 'cancelled';
+      senderFirst: string | null;
+      senderInitial: string | null;
+      receiverFirst: string | null;
+      receiverInitial: string | null;
+    } | undefined;
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      senderId: row.senderId,
+      receiverId: row.receiverId,
+      status: row.status,
+      senderName: row.senderFirst ? `${row.senderFirst} ${row.senderInitial || ''}.` : 'DHBW Student',
+      receiverName: row.receiverFirst ? `${row.receiverFirst} ${row.receiverInitial || ''}.` : 'DHBW Student',
+    };
+  }
+
+  hasAcceptedPartnerRequestBetween(firstPrincipalId: string, secondPrincipalId: string): boolean {
+    return Boolean(this.database.prepare(`
+      SELECT 1
+      FROM training_partner_requests
+      WHERE status = 'accepted'
+        AND (
+          (sender_id = ? AND receiver_id = ?) OR
+          (sender_id = ? AND receiver_id = ?)
+        )
+      LIMIT 1
+    `).get(firstPrincipalId, secondPrincipalId, secondPrincipalId, firstPrincipalId));
   }
 
   updatePartnerRequestStatus(id: string, principalId: string, status: 'accepted' | 'declined' | 'cancelled', updatedAt: string): boolean {

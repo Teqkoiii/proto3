@@ -1,14 +1,5 @@
-import { initializeApp } from 'firebase/app';
 import {
-  getAuth,
-  signInAnonymously,
-  signInWithPopup,
-  GoogleAuthProvider,
-  signOut,
-  onAuthStateChanged,
-  type User,
-} from 'firebase/auth';
-import {
+  connectFirestoreEmulator,
   getFirestore,
   doc,
   getDocFromServer,
@@ -23,9 +14,14 @@ import {
   getDocs,
   getDoc,
   serverTimestamp,
-  type Unsubscribe,
 } from 'firebase/firestore';
-import firebaseConfig from '../../firebase-applet-config.json';
+import { auth } from './firebaseAuth';
+import {
+  firebaseApp,
+  firebaseFirestoreDatabaseId,
+  firebaseFirestoreEmulatorHost,
+} from './firebaseApp';
+export { getCurrentFirebaseUser, logoutFirebase, subscribeToAuth } from './firebaseAuth';
 
 export enum OperationType {
   CREATE = 'create',
@@ -53,10 +49,17 @@ export interface FirestoreErrorInfo {
   };
 }
 
-const app = initializeApp(firebaseConfig);
 // CRITICAL: Specifying the custom firestoreDatabaseId from configuration
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
-export const auth = getAuth(app);
+export const db = getFirestore(firebaseApp, firebaseFirestoreDatabaseId);
+if (firebaseFirestoreEmulatorHost) {
+  const [host, portValue] = firebaseFirestoreEmulatorHost.split(':');
+  const port = Number(portValue);
+  if (!host || !Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error('VITE_FIREBASE_FIRESTORE_EMULATOR_HOST must be a host:port pair');
+  }
+  connectFirestoreEmulator(db, host, port);
+}
+export { auth };
 
 export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null): never {
   const errInfo: FirestoreErrorInfo = {
@@ -91,30 +94,3 @@ async function testConnection() {
   }
 }
 void testConnection();
-
-// Auth listener for state changes
-export function subscribeToAuth(onUserChanged: (user: User | null) => void): Unsubscribe {
-  return onAuthStateChanged(auth, (user) => {
-    onUserChanged(user);
-  });
-}
-
-export async function getCurrentFirebaseUser(): Promise<User | null> {
-  if (auth.currentUser) return auth.currentUser;
-  return new Promise((resolve) => {
-    const unsub = onAuthStateChanged(auth, (user) => {
-      unsub();
-      resolve(user);
-    });
-  });
-}
-
-export async function loginWithGoogle(): Promise<User> {
-  const provider = new GoogleAuthProvider();
-  const cred = await signInWithPopup(auth, provider);
-  return cred.user;
-}
-
-export async function logoutFirebase(): Promise<void> {
-  await signOut(auth);
-}
