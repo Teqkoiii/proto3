@@ -163,6 +163,7 @@ export interface GymRepository {
   logout(): Promise<void>;
   getAvailability(startAt: string, durationMinutes: number): Promise<GymAvailability>;
   createBooking(input: { startsAt: string; durationMinutes: number; title?: string; entryType?: 'planned' | 'reservation' }): Promise<GymBooking>;
+  updateBooking(id: string, input: { startsAt: string; durationMinutes: number; title?: string; entryType?: 'planned' | 'reservation' }): Promise<GymBooking>;
   deleteBooking(id: string): Promise<void>;
   getVisits(): Promise<GymVisit[]>;
   getWorkouts(): Promise<WorkoutLog[]>;
@@ -190,7 +191,7 @@ interface FetchResponseLike {
 }
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<FetchResponseLike>;
-const apiBaseUrl = (import.meta.env.VITE_GYM_API_BASE_URL ?? '').replace(/\/$/, '');
+const apiBaseUrl = (import.meta.env?.VITE_GYM_API_BASE_URL ?? '').replace(/\/$/, '');
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -308,6 +309,13 @@ export function createGymRepository(fetcher: FetchLike = fetch): GymRepository {
       });
       return result.booking;
     },
+    async updateBooking(id, input) {
+      const result = await request<{ booking: GymBooking }>(`/api/gym/my/bookings/${encodeURIComponent(id)}`, {
+        method: 'PUT',
+        body: JSON.stringify(input),
+      });
+      return result.booking;
+    },
     async deleteBooking(id) {
       await request(`/api/gym/my/bookings/${encodeURIComponent(id)}`, { method: 'DELETE' });
     },
@@ -346,5 +354,4 @@ export function createGymRepository(fetcher: FetchLike = fetch): GymRepository {
 }
 
 export const gymRepository = createGymRepository();
-
 

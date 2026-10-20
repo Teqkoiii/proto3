@@ -213,15 +213,17 @@ export function GymApp() {
   }, [bookings, firebaseUserId, notifications]);
 
   const runMutation = useCallback(
-    async (operation: () => Promise<void>, successMessage: string) => {
+    async (operation: () => Promise<void>, successMessage: string): Promise<boolean> => {
       setBusy(true);
       setError(null);
       try {
         await operation();
         await refreshAll();
         setToast(successMessage);
+        return true;
       } catch (caught) {
         setError(errorMessage(caught));
+        return false;
       } finally {
         setBusy(false);
       }
@@ -263,6 +265,25 @@ export function GymApp() {
       runMutation(
         () => gymRepository.deleteBooking(id),
         'Eintrag entfernt.',
+      ),
+    [runMutation],
+  );
+
+  const handleUpdateBooking = useCallback(
+    (id: string, input: { startsAt: string; durationMinutes: number; title?: string; entryType?: 'planned' | 'reservation' }) =>
+      runMutation(
+        async () => {
+          const updatedBooking = await gymRepository.updateBooking(id, input);
+          setBookings((current) => current.map((booking) => (
+            booking.id === id ? updatedBooking : booking
+          )));
+          setCalendarEvents((current) => current.map((event) => (
+            event.id === id
+              ? { ...event, ...updatedBooking, entryType: input.entryType ?? event.entryType }
+              : event
+          )));
+        },
+        'Trainingszeit aktualisiert.',
       ),
     [runMutation],
   );
@@ -604,6 +625,7 @@ export function GymApp() {
           busy={busy}
           error={error}
           onCreateBooking={handleCreateBooking}
+          onUpdateBooking={handleUpdateBooking}
           onDeleteBooking={handleDeleteBooking}
           onCheckAvailability={handleAvailability}
           onPresence={handlePresence}

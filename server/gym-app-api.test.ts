@@ -209,3 +209,68 @@ test('profile recovery attempts are rate limited', async (t) => {
   }
   assert.deepEqual(statuses, [401, 401, 401, 401, 401, 429]);
 });
+
+test('booking updates are owner-scoped and reject invalid or unauthenticated payloads', async (t) => {
+  const { baseUrl } = await startApi(t);
+  const owner = await createAnonymousClient(baseUrl);
+  const other = await createAnonymousClient(baseUrl);
+  const createdAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+
+  const created = await owner.request('/api/gym/bookings', {
+    method: 'POST',
+    body: JSON.stringify({ startsAt: createdAt, durationMinutes: 60, title: 'Alt', entryType: 'planned' }),
+  });
+  assert.equal(created.status, 201);
+  const booking = (await created.json() as { booking: { id: string } }).booking;
+
+  const missing = await owner.request('/api/gym/my/bookings/does-not-exist', {
+    method: 'PUT',
+    body: JSON.stringify({ startsAt: createdAt, durationMinutes: 60, title: 'Fehler', entryType: 'planned' }),
+  });
+  assert.equal(missing.status, 404);
+
+  const unauthenticated = await fetch(`${baseUrl}/api/gym/my/bookings/${booking.id}`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ startsAt: createdAt, durationMinutes: 60, title: 'Kein Zugriff', entryType: 'planned' }),
+  });
+  assert.equal(unauthenticated.status, 401);
+
+  const updatedAt = new Date(Date.now() + 25 * 60 * 60 * 1000).toISOString();
+  const updated = await owner.request(`/api/gym/my/bookings/${booking.id}`, {
+    method: 'PUT',
+    body: JSON.stringify({ startsAt: updatedAt, durationMinutes: 90, title: 'Neu', entryType: 'reservation' }),
+  });
+  assert.equal(updated.status, 200);
+  const payload = await updated.json() as { booking: { title: string; entryType: string; startsAt: string } };
+  assert.equal(payload.booking.title, 'Neu');
+  assert.equal(payload.booking.entryType, 'reservation');
+  assert.equal(payload.booking.startsAt, updatedAt);
+
+  const blocked = await other.request(`/api/gym/my/bookings/${booking.id}`, {
+    method: 'PUT',
+    body: JSON.stringify({ startsAt: createdAt, durationMinutes: 60, title: 'Fremd', entryType: 'planned' }),
+  });
+  assert.equal(blocked.status, 404);
+  const afterBlocked = (await owner.request('/api/gym/my/bookings').then((response) => response.json()) as {
+    bookings: Array<{ id: string; startsAt: string; endsAt: string; title: string; status: string; entryType: string }>;
+  }).bookings.find((item) => item.id === booking.id);
+  assert.deepEqual(afterBlocked, {
+    id: booking.id,
+    startsAt: updatedAt,
+    endsAt: new Date(Date.parse(updatedAt) + 90 * 60 * 1000).toISOString(),
+    title: 'Neu',
+    status: 'planned',
+    entryType: 'reservation',
+  });
+
+  const invalid = await owner.request(`/api/gym/my/bookings/${booking.id}`, {
+    method: 'PUT',
+    body: JSON.stringify({ startsAt: createdAt, durationMinutes: 'invalid', title: 'Fehler', entryType: 'planned' }),
+  });
+  assert.equal(invalid.status, 400);
+  const afterInvalid = (await owner.request('/api/gym/my/bookings').then((response) => response.json()) as {
+    bookings: Array<{ id: string; startsAt: string; endsAt: string; title: string; status: string; entryType: string }>;
+  }).bookings.find((item) => item.id === booking.id);
+  assert.deepEqual(afterInvalid, afterBlocked);
+});
