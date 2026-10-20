@@ -14,6 +14,7 @@ import {
   ListFilter,
   LogIn,
   LogOut,
+  Pencil,
   Plus,
   Trash2,
   User,
@@ -60,6 +61,13 @@ function localInputToIso(value: string): string | null {
   return Number.isFinite(date.getTime()) ? date.toISOString() : null;
 }
 
+function nearestSupportedDuration(minutes: number): number {
+  const supported = [30, 60, 90, 120];
+  return supported.reduce((best, current) => {
+    return Math.abs(current - minutes) < Math.abs(best - minutes) ? current : best;
+  }, supported[0]);
+}
+
 export function Calendar({
   session,
   calendarEvents,
@@ -71,6 +79,7 @@ export function Calendar({
   busy,
   error,
   onCreateBooking,
+  onUpdateBooking,
   onDeleteBooking,
   onCheckAvailability,
   onPresence,
@@ -86,6 +95,7 @@ export function Calendar({
   busy: boolean;
   error: string | null;
   onCreateBooking: (input: { startsAt: string; durationMinutes: number; title?: string; entryType?: 'planned' | 'reservation' }) => void;
+  onUpdateBooking?: (id: string, input: { startsAt: string; durationMinutes: number; title?: string; entryType?: 'planned' | 'reservation' }) => void;
   onDeleteBooking: (id: string) => void;
   onCheckAvailability: (startAt: string, duration: number) => void;
   onPresence: (present: boolean) => void;
@@ -96,6 +106,7 @@ export function Calendar({
   const [duration, setDuration] = useState(60);
   const [title, setTitle] = useState('');
   const [entryType, setEntryType] = useState<'planned' | 'reservation'>('planned');
+  const [editingBookingId, setEditingBookingId] = useState<string | null>(null);
   const [typeFilter, setTypeFilter] = useState<'all' | 'planned' | 'reservation' | 'checked_in'>('all');
 
   // Weekly View State
@@ -194,19 +205,50 @@ export function Calendar({
     return () => window.clearTimeout(timer);
   }, [startsAtIso, duration, online, onCheckAvailability]);
 
+  const resetBookingForm = () => {
+    setEditingBookingId(null);
+    setStartsAt(tomorrowInputValue());
+    setDuration(60);
+    setTitle('');
+    setEntryType('planned');
+  };
+
+  const startEditingBooking = (event: CalendarEventItem) => {
+    const startDate = new Date(event.startsAt);
+    const endDate = new Date(event.endsAt);
+    const diffMinutes = Math.round((endDate.getTime() - startDate.getTime()) / 60_000);
+    setEditingBookingId(event.id);
+    setStartsAt(localDateTimeValue(startDate));
+    setDuration(nearestSupportedDuration(diffMinutes));
+    setTitle(event.title || '');
+    setEntryType(event.entryType);
+    const formElement = document.getElementById('booking-form-section');
+    if (formElement) {
+      formElement.scrollIntoView({ behavior: 'smooth' });
+    }
+  };
+
   const create = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!startsAtIso) return;
-    onCreateBooking({
+    const payload = {
       startsAt: startsAtIso,
       durationMinutes: duration,
       title: title.trim(),
       entryType,
-    });
+    };
+
+    if (editingBookingId && onUpdateBooking) {
+      onUpdateBooking(editingBookingId, payload);
+      return;
+    }
+
+    onCreateBooking(payload);
   };
 
   const handleSelectDayForPlanning = (day: Date) => {
     setSelectedDay(day);
+    setEditingBookingId(null);
     const target = new Date(day);
     target.setHours(17, 0, 0, 0);
     setStartsAt(localDateTimeValue(target));
@@ -263,7 +305,6 @@ export function Calendar({
         </div>
       </section>
 
-      {/* Currently checked-in students (if any) */}
       {activeCheckIns.length > 0 && (
         <section className="surface active-checkins-panel">
           <div className="flex items-center justify-between gap-4 mb-3">
@@ -292,7 +333,6 @@ export function Calendar({
         </section>
       )}
 
-      {/* Calendar Header with View-Mode Switcher */}
       <div className="calendar-view-header">
         <div className="view-mode-tabs" role="tablist" aria-label="Kalender-Ansicht">
           <button
@@ -344,10 +384,8 @@ export function Calendar({
         )}
       </div>
 
-      {/* VIEW MODE 1: WOCHENANSICHT (WEEKLY VIEW) */}
       {viewMode === 'week' && (
         <section className="surface week-panel" aria-label="Wochenansicht Trainingskalender">
-          {/* Week Toolbar: Navigation, KW Badge, and Summary Stats */}
           <div className="week-toolbar">
             <div className="week-nav-group">
               <button
@@ -386,7 +424,6 @@ export function Calendar({
               </div>
             </div>
 
-            {/* Quick Stats Pills for the Week */}
             <div className="week-quick-stats">
               <div className="week-stat-pill pill-planned">
                 <CalendarCheck size={14} aria-hidden="true" />
@@ -405,17 +442,14 @@ export function Calendar({
             </div>
           </div>
 
-          {/* 7-Day Grid: Monday through Sunday */}
           <div className="week-grid-container" role="grid" aria-label="Wochenübersicht Mo bis So">
             {weekDays.map((day) => {
               const dayIsToday = isSameDay(day, new Date());
               const dayIsSelected = isSameDay(day, selectedDay);
 
-              // Events on this day
               const dayCalEvents = calendarEvents.filter((e) => isSameDay(e.startsAt, day));
               const dayWorkouts = workouts.filter((w) => isSameDay(w.occurredAt, day));
 
-              // Apply week filter
               const filteredCalEvents = dayCalEvents.filter((e) => {
                 if (weekFilter === 'mine') return e.isMine;
                 if (weekFilter === 'community') return !e.isMine;
@@ -423,7 +457,6 @@ export function Calendar({
               });
 
               const filteredDayWorkouts = weekFilter === 'community' ? [] : dayWorkouts;
-
               const totalItems = filteredCalEvents.length + filteredDayWorkouts.length;
 
               return (
@@ -441,7 +474,6 @@ export function Calendar({
                   }}
                   aria-label={`${formatDayOfWeek(day, 'long')}, ${formatShortDate(day)}: ${totalItems} Aktivitäten`}
                 >
-                  {/* Day Header */}
                   <div className="week-day-header">
                     <div className="week-day-label-group">
                       <span className="week-day-name">{formatDayOfWeek(day, 'short')}</span>
@@ -450,9 +482,7 @@ export function Calendar({
                     {dayIsToday && <span className="week-day-today-tag">Heute</span>}
                   </div>
 
-                  {/* Day Events Container */}
                   <div className="week-day-events-list">
-                    {/* Logged Workouts for this day */}
                     {filteredDayWorkouts.map((workout) => (
                       <div
                         key={workout.id}
@@ -472,7 +502,6 @@ export function Calendar({
                       </div>
                     ))}
 
-                    {/* Planned Sessions & Reservations */}
                     {filteredCalEvents.map((event) => {
                       const isPlanned = event.entryType === 'planned';
                       const isReservation = event.entryType === 'reservation';
@@ -507,7 +536,6 @@ export function Calendar({
                       );
                     })}
 
-                    {/* Empty Day Indicator */}
                     {totalItems === 0 && (
                       <div className="week-day-empty-placeholder">
                         <span>Kein Training</span>
@@ -515,7 +543,6 @@ export function Calendar({
                     )}
                   </div>
 
-                  {/* Quick Add Button for this day */}
                   <div className="week-day-add-action">
                     <button
                       type="button"
@@ -535,7 +562,6 @@ export function Calendar({
             })}
           </div>
 
-          {/* Selected Day Inspector Panel (Tages-Fokus & Detailansicht) */}
           <div className="week-day-inspector">
             <div className="inspector-header">
               <div className="inspector-date-title">
@@ -556,7 +582,6 @@ export function Calendar({
             </div>
 
             <div className="inspector-grid">
-              {/* Column 1: Own Planned Sessions & Reservations */}
               <div className="inspector-section">
                 <div className="inspector-section-title">
                   <span>Geplante Besuche & Reservierungen</span>
@@ -579,7 +604,15 @@ export function Calendar({
                         <Clock3 size={12} />
                         <span>{formatTime(ev.startsAt)} – {formatTime(ev.endsAt)}</span>
                       </div>
-                      <div className="flex justify-end mt-2">
+                      <div className="flex justify-end mt-2 gap-2">
+                        <button
+                          type="button"
+                          className="icon-button"
+                          aria-label={`Eintrag ${ev.title} bearbeiten`}
+                          onClick={() => startEditingBooking(ev)}
+                        >
+                          <Pencil size={15} aria-hidden="true" />
+                        </button>
                         <button
                           type="button"
                           className="icon-button danger-hover"
@@ -602,7 +635,6 @@ export function Calendar({
                 )}
               </div>
 
-              {/* Column 2: Logged Workouts & Exercises */}
               <div className="inspector-section">
                 <div className="inspector-section-title">
                   <span>Trainingspläne & Workouts</span>
@@ -621,7 +653,6 @@ export function Calendar({
                         <span>{workout.exercises.length} Übungen erfasst</span>
                       </div>
 
-                      {/* Exercises breakdown */}
                       <div className="inspector-exercise-list">
                         {workout.exercises.map((ex, idx) => (
                           <div key={idx} className="inspector-exercise-row">
@@ -651,7 +682,6 @@ export function Calendar({
                 )}
               </div>
 
-              {/* Column 3: Campus Community Activity */}
               <div className="inspector-section">
                 <div className="inspector-section-title">
                   <span>Campus-Community vor Ort</span>
@@ -701,11 +731,9 @@ export function Calendar({
         </section>
       )}
 
-      {/* Booking Form and List / Calendar Panels */}
       <div className="calendar-grid">
-        {/* Booking Form */}
         <section id="booking-form-section" className="surface calendar-booking-form">
-          <SectionTitle title="Trainingszeit eintragen" />
+          <SectionTitle title={editingBookingId ? 'Trainingszeit bearbeiten' : 'Trainingszeit eintragen'} />
           <form onSubmit={create} className="stack-form">
             <Field label="Art des Eintrags">
               <div className="entry-type-selector" role="radiogroup">
@@ -777,20 +805,29 @@ export function Calendar({
             >
               <CalendarCheck size={17} aria-hidden="true" />
               <span>
-                {entryType === 'planned' ? 'Anwesenheit ankündigen' : 'Trainingszeit reservieren'}
+                {editingBookingId ? 'Änderung speichern' : entryType === 'planned' ? 'Anwesenheit ankündigen' : 'Trainingszeit reservieren'}
               </span>
             </button>
+
+            {editingBookingId && (
+              <button
+                type="button"
+                className="button button-secondary full-width"
+                onClick={resetBookingForm}
+              >
+                Bearbeiten abbrechen
+              </button>
+            )}
+
             <p className="field-hint">
               Freiwillige Zeitfenster-Angabe · Dient der Community-Transparenz ohne Schrankensperren.
             </p>
           </form>
         </section>
 
-        {/* Shared Calendar Feed (LIST VIEW or Side Overview) */}
         <section className="surface calendar-list-panel">
           <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
             <SectionTitle title="Gemeinsamer Trainingskalender" />
-            {/* Filter buttons */}
             <div className="calendar-type-filters">
               <button
                 type="button"
@@ -875,19 +912,30 @@ export function Calendar({
                     </div>
 
                     {event.isMine && (
-                      <button
-                        type="button"
-                        className="icon-button danger-hover"
-                        aria-label={`Eintrag ${event.title} stornieren`}
-                        disabled={busy}
-                        onClick={() => {
-                          if (window.confirm('Diesen Kalendereintrag wirklich entfernen?')) {
-                            onDeleteBooking(event.id);
-                          }
-                        }}
-                      >
-                        <Trash2 size={17} aria-hidden="true" />
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          className="icon-button"
+                          aria-label={`Eintrag ${event.title} bearbeiten`}
+                          disabled={busy}
+                          onClick={() => startEditingBooking(event)}
+                        >
+                          <Pencil size={15} aria-hidden="true" />
+                        </button>
+                        <button
+                          type="button"
+                          className="icon-button danger-hover"
+                          aria-label={`Eintrag ${event.title} stornieren`}
+                          disabled={busy}
+                          onClick={() => {
+                            if (window.confirm('Diesen Kalendereintrag wirklich entfernen?')) {
+                              onDeleteBooking(event.id);
+                            }
+                          }}
+                        >
+                          <Trash2 size={17} aria-hidden="true" />
+                        </button>
+                      </div>
                     )}
                   </li>
                 );
@@ -902,7 +950,6 @@ export function Calendar({
         </section>
       </div>
 
-      {/* History Grid */}
       <div className="calendar-grid calendar-lower-grid">
         <section className="surface calendar-list-panel">
           <SectionTitle title="Vergangene eigene Besuche" />
@@ -934,3 +981,5 @@ export function Calendar({
     </>
   );
 }
+
+
