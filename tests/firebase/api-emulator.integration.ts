@@ -15,6 +15,8 @@ import {
 } from 'firebase/auth';
 import { getFirestore } from 'firebase-admin/firestore';
 import { createGymAppApi } from '../../server/gym-app-api.ts';
+import { GymAppRepository } from '../../server/gymAppRepository.ts';
+import { hashPassword } from '../../server/password.ts';
 import { getFirebaseAdminApp } from '../../server/firebaseAuth.ts';
 import { writeCommunityConversation, writePartnerNotification } from '../../server/firebaseNotifications.ts';
 
@@ -102,6 +104,70 @@ test('verified emulator users receive server-authorized partner request notifica
   const conversationId = conversationResponse.body.conversationId as string;
   const conversation = await firestore.collection('conversations').doc(conversationId).get();
   assert.deepEqual(conversation.get('participantIds'), [alice.uid, bob.uid].sort());
+
+  // Legacy profiles must not be claimable by email alone; the previous password is required.
+  const legacyEmail = `legacy-link-${randomUUID()}@bad-mergentheim.dhbw.de`;
+  const legacyPassword = 'legacy-password-123';
+  const now = new Date().toISOString();
+  const repository = new GymAppRepository(database);
+  const legacyPrincipalId = repository.createAnonymousPrincipal(
+    randomUUID().replaceAll('-', '').repeat(2),
+    now,
+    new Date(Date.now() + 86_400_000).toISOString(),
+  );
+  repository.createLocalCredentials(legacyPrincipalId, legacyEmail, await hashPassword(legacyPassword), now);
+  repository.upsertCommunityProfile({
+    principalId: legacyPrincipalId,
+    firstName: 'Legacy Profile',
+    lastNameInitial: 'L',
+    courseOfStudy: 'Pflege',
+    trainingGoals: ['Kraft'],
+    preferredTimes: ['abends'],
+    interests: ['Fitness'],
+    bio: 'Profil muss erhalten bleiben',
+    isPublicPresence: true,
+    updatedAt: now,
+  });
+
+  const legacyFirebaseUser = await createVerifiedAccount(auth, legacyEmail);
+  const missingPassword = await api(baseUrl, '/api/gym/auth/link', legacyFirebaseUser.token, {
+    method: 'POST',
+    body: {},
+  });
+  assert.equal(missingPassword.response.status, 409);
+
+  const wrongPassword = await api(baseUrl, '/api/gym/auth/link', legacyFirebaseUser.token, {
+    method: 'POST',
+    body: { legacyPassword: 'wrong-password-123' },
+  });
+  assert.equal(wrongPassword.response.status, 401);
+
+  const linked = await api(baseUrl, '/api/gym/auth/link', legacyFirebaseUser.token, {
+    method: 'POST',
+    body: { legacyPassword },
+  });
+  assert.equal(linked.response.status, 200);
+
+  const preservedProfile = await api(baseUrl, '/api/gym/profile/community', legacyFirebaseUser.token);
+  assert.equal(preservedProfile.response.status, 200);
+  assert.equal((preservedProfile.body.profile as { firstName: string }).firstName, 'Legacy Profile');
+  assert.equal((preservedProfile.body.profile as { bio: string }).bio, 'Profil muss erhalten bleiben');
+
+  // A verified address outside the approved DHBW domains must still be rejected.
+  const externalAccount = await createVerifiedAccount(auth, `external-${randomUUID()}@example.com`);
+  const externalLink = await api(baseUrl, '/api/gym/auth/link', externalAccount.token, {
+    method: 'POST',
+    body: {},
+  });
+  assert.equal(externalLink.response.status, 403);
+
+  // An unverified DHBW address must not be allowed to link or access an account.
+  const unverified = await createUnverifiedAccount(auth, `unverified-${randomUUID()}@bad-mergentheim.dhbw.de`);
+  const unverifiedLink = await api(baseUrl, '/api/gym/auth/link', unverified.token, {
+    method: 'POST',
+    body: {},
+  });
+  assert.equal(unverifiedLink.response.status, 403);
 });
 
 async function createVerifiedAccount(auth: ReturnType<typeof getAuth>, email: string) {
@@ -123,6 +189,16 @@ async function createVerifiedAccount(auth: ReturnType<typeof getAuth>, email: st
   const verified = await signInWithEmailAndPassword(auth, email, password);
   const token = await verified.user.getIdToken();
   const account = { uid: verified.user.uid, token };
+  await signOut(auth);
+  return account;
+}
+
+async function createUnverifiedAccount(auth: ReturnType<typeof getAuth>, email: string) {
+  const password = `test-${randomUUID()}-Pass9`;
+  const credential = await createUserWithEmailAndPassword(auth, email, password);
+  await sendEmailVerification(credential.user);
+  const token = await credential.user.getIdToken();
+  const account = { uid: credential.user.uid, token };
   await signOut(auth);
   return account;
 }
