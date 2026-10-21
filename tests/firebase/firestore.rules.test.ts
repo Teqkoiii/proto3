@@ -225,6 +225,11 @@ test('conversations and chat messages are limited to conversation participants',
     lastMessageText: 'Spoofed sender',
     lastSenderId: alice.uid,
   }));
+  await assertFails(updateDoc(doc(bobDb, 'conversations/conversation-one'), {
+    lastMessageText: 'Malformed timestamp',
+    lastSenderId: bob.uid,
+    lastMessageAt: 'not-a-timestamp',
+  }));
   await assertFails(setDoc(doc(aliceDb, 'conversations/conversation-two'), {
     id: 'conversation-two',
     participantIds: [alice.uid, bob.uid],
