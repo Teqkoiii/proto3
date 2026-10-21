@@ -240,7 +240,9 @@ function assertLinkRejectionDidNotMutateLegacyProfile(
   const profile = database.prepare(
     'SELECT first_name AS firstName, bio FROM community_profiles WHERE principal_id = ?',
   ).get(principalId) as { firstName: string; bio: string } | undefined;
-  assert.deepEqual(profile, expectedProfile, 'the legacy profile must remain unchanged after a rejected link');
+  assert.ok(profile, 'the legacy profile must remain present after a rejected link');
+  assert.equal(profile.firstName, expectedProfile.firstName, 'the legacy profile name must remain unchanged');
+  assert.equal(profile.bio, expectedProfile.bio, 'the legacy profile bio must remain unchanged');
 }
 
 async function createVerifiedAccount(auth: ReturnType<typeof getAuth>, email: string) {
