@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { DatabaseSync } from 'node:sqlite';
 import { deleteApp, initializeApp } from 'firebase/app';
@@ -153,6 +153,38 @@ test('verified emulator users receive server-authorized partner request notifica
   assert.equal((preservedProfile.body.profile as { firstName: string }).firstName, 'Legacy Profile');
   assert.equal((preservedProfile.body.profile as { bio: string }).bio, 'Profil muss erhalten bleiben');
 
+  // An expired legacy session must not prove ownership of an existing profile.
+  const expiredEmail = `expired-link-${randomUUID()}@bad-mergentheim.dhbw.de`;
+  const expiredPassword = 'expired-password-123';
+  const expiredSessionToken = randomBytes(32).toString('hex');
+  const expiredNow = new Date().toISOString();
+  const expiredPrincipalId = repository.createAnonymousPrincipal(
+    createHash('sha256').update(expiredSessionToken).digest('hex'),
+    expiredNow,
+    new Date(Date.now() - 60_000).toISOString(),
+  );
+  repository.createLocalCredentials(expiredPrincipalId, expiredEmail, await hashPassword(expiredPassword), expiredNow);
+  repository.upsertCommunityProfile({
+    principalId: expiredPrincipalId,
+    firstName: 'Expired Session Profile',
+    lastNameInitial: 'E',
+    courseOfStudy: 'Pflege',
+    trainingGoals: ['Ausdauer'],
+    preferredTimes: ['morgens'],
+    interests: ['Laufen'],
+    bio: 'Abgelaufene Sitzung darf keinen Zugriff geben',
+    isPublicPresence: true,
+    updatedAt: expiredNow,
+  });
+
+  const expiredFirebaseUser = await createVerifiedAccount(auth, expiredEmail);
+  const expiredSessionLink = await api(baseUrl, '/api/gym/auth/link', expiredFirebaseUser.token, {
+    method: 'POST',
+    body: {},
+    cookie: `gym_app_session=${expiredSessionToken}`,
+  });
+  assert.equal(expiredSessionLink.response.status, 409);
+
   // A verified address outside the approved DHBW domains must still be rejected.
   const externalAccount = await createVerifiedAccount(auth, `external-${randomUUID()}@example.com`);
   const externalLink = await api(baseUrl, '/api/gym/auth/link', externalAccount.token, {
@@ -223,12 +255,13 @@ async function api(
   baseUrl: string,
   path: string,
   token: string,
-  options: { method?: string; body?: Record<string, unknown> } = {},
+  options: { method?: string; body?: Record<string, unknown>; cookie?: string } = {},
 ): Promise<{ response: Response; body: Record<string, unknown> }> {
   const response = await fetch(`${baseUrl}${path}`, {
     method: options.method ?? 'GET',
     headers: {
       Authorization: `Bearer ${token}`,
+      ...(options.cookie ? { Cookie: options.cookie } : {}),
       ...(options.body ? { 'Content-Type': 'application/json' } : {}),
     },
     ...(options.body ? { body: JSON.stringify(options.body) } : {}),
