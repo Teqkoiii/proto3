@@ -147,6 +147,7 @@ test('verified emulator users receive server-authorized partner request notifica
   assert.equal(wrongPassword.response.status, 401);
   assertLinkRejectionDidNotMutateLegacyProfile(
     database, repository, legacyFirebaseUser.uid, legacyPrincipalId,
+    { firstName: 'Legacy Profile', bio: 'Profil muss erhalten bleiben' },
   );
 
   const linked = await api(baseUrl, '/api/gym/auth/link', legacyFirebaseUser.token, {
@@ -218,6 +219,7 @@ function assertLinkRejectionDidNotMutateLegacyProfile(
   repository: GymAppRepository,
   firebaseUid: string,
   principalId: string,
+  expectedProfile: { firstName: string; bio: string },
 ): void {
   assert.equal(
     repository.findPrincipalForVerifiedAccount('firebase', firebaseUid),
