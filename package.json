@@ -12,7 +12,7 @@
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
     "test": "tsx --test server/*.test.ts src/services/gymRepository.test.ts src/services/firebaseAppConfig.test.ts src/features/gym/calendarBookingSubmission.test.ts scripts/*.test.mjs",
-    "test:firebase": "firebase emulators:exec --only auth,firestore --project demo-gym-auth-test \"tsx --test tests/firebase/firestore.rules.test.ts tests/firebase/auth-emulator.integration.ts tests/firebase/api-emulator.integration.ts\"",
+    "test:firebase": "firebase emulators:exec --only auth,firestore --project demo-gym-auth-test \"node --import tsx --test --test-concurrency=1 tests/firebase/firestore.rules.test.ts tests/firebase/auth-emulator.integration.ts tests/firebase/api-emulator.integration.ts\"",
     "test:api:isolated": "firebase emulators:exec --only auth,firestore --project demo-gym-auth-test \"node scripts/start-test-api.mjs\""
   },
   "dependencies": {
