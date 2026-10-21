@@ -135,12 +135,19 @@ test('verified emulator users receive server-authorized partner request notifica
     body: {},
   });
   assert.equal(missingPassword.response.status, 409);
+  assertLinkRejectionDidNotMutateLegacyProfile(
+    database, repository, legacyFirebaseUser.uid, legacyPrincipalId,
+    { firstName: 'Legacy Profile', bio: 'Profil muss erhalten bleiben' },
+  );
 
   const wrongPassword = await api(baseUrl, '/api/gym/auth/link', legacyFirebaseUser.token, {
     method: 'POST',
     body: { legacyPassword: 'wrong-password-123' },
   });
   assert.equal(wrongPassword.response.status, 401);
+  assertLinkRejectionDidNotMutateLegacyProfile(
+    database, repository, legacyFirebaseUser.uid, legacyPrincipalId,
+  );
 
   const linked = await api(baseUrl, '/api/gym/auth/link', legacyFirebaseUser.token, {
     method: 'POST',
@@ -184,6 +191,10 @@ test('verified emulator users receive server-authorized partner request notifica
     cookie: `gym_app_session=${expiredSessionToken}`,
   });
   assert.equal(expiredSessionLink.response.status, 409);
+  assertLinkRejectionDidNotMutateLegacyProfile(
+    database, repository, expiredFirebaseUser.uid, expiredPrincipalId,
+    { firstName: 'Expired Session Profile', bio: 'Abgelaufene Sitzung darf keinen Zugriff geben' },
+  );
 
   // A verified address outside the approved DHBW domains must still be rejected.
   const externalAccount = await createVerifiedAccount(auth, `external-${randomUUID()}@example.com`);
@@ -201,6 +212,34 @@ test('verified emulator users receive server-authorized partner request notifica
   });
   assert.equal(unverifiedLink.response.status, 403);
 });
+
+function assertLinkRejectionDidNotMutateLegacyProfile(
+  database: DatabaseSync,
+  repository: GymAppRepository,
+  firebaseUid: string,
+  principalId: string,
+): void {
+  assert.equal(
+    repository.findPrincipalForVerifiedAccount('firebase', firebaseUid),
+    undefined,
+    'a rejected link must not associate the Firebase UID with any local profile',
+  );
+  assert.equal(
+    database.prepare("SELECT id FROM gym_accounts WHERE provider = 'firebase' AND subject = ?")
+      .get(firebaseUid),
+    undefined,
+    'a rejected link must not leave a Firebase account record behind',
+  );
+
+  const principal = database.prepare('SELECT account_id AS accountId FROM gym_principals WHERE id = ?')
+    .get(principalId) as { accountId: string | null } | undefined;
+  assert.equal(principal?.accountId, null, 'a rejected link must not alter the legacy principal');
+
+  const profile = database.prepare(
+    'SELECT first_name AS firstName, bio FROM community_profiles WHERE principal_id = ?',
+  ).get(principalId) as { firstName: string; bio: string } | undefined;
+  assert.deepEqual(profile, expectedProfile, 'the legacy profile must remain unchanged after a rejected link');
+}
 
 async function createVerifiedAccount(auth: ReturnType<typeof getAuth>, email: string) {
   const password = `test-${randomUUID()}-Pass9`;
