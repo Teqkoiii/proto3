@@ -230,6 +230,10 @@ test('conversations and chat messages are limited to conversation participants',
     lastSenderId: bob.uid,
     lastMessageAt: 'not-a-timestamp',
   }));
+  await assertFails(updateDoc(doc(bobDb, 'conversations/conversation-one'), {
+    lastMessageText: 'Invalid sender metadata',
+    lastSenderId: 'charlie',
+  }));
   await assertFails(setDoc(doc(aliceDb, 'conversations/conversation-two'), {
     id: 'conversation-two',
     participantIds: [alice.uid, bob.uid],
