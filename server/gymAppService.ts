@@ -34,6 +34,7 @@ const DHBW_EMAIL_DOMAINS = new Set([
 ]);
 
 export function isDhbwEmail(email: string): boolean {
+  if (!EMAIL_PATTERN.test(email)) return false;
   const parts = email.toLowerCase().split('@');
   if (parts.length !== 2) return false;
   return DHBW_EMAIL_DOMAINS.has(parts[1] ?? '');
