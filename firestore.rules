@@ -81,7 +81,7 @@ service cloud.firestore {
              (!('trainingGoals' in data) || isBoundedStringList(data.trainingGoals)) &&
              (!('preferredTimes' in data) || isBoundedStringList(data.preferredTimes)) &&
              (!('interests' in data) || isBoundedStringList(data.interests)) &&
-             (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 40));
+             (!('updatedAt' in data) || isValidTimestampString(data.updatedAt));
     }
 
     function isValidConversation(data) {
