@@ -110,12 +110,16 @@ test('Firestore access requires a verified DHBW email and rejects lookalike doma
   }
 });
 
-test('community profiles keep private profiles owner-only and allow only explicitly public reads', async () => {
+test('community profiles deny raw listing and reject extra fields on writes and legacy reads', async () => {
   await resetFirestore();
   await environment.withSecurityRulesDisabled(async (context) => {
     const db = context.firestore();
     await setDoc(doc(db, 'community_profiles/alice'), profile('alice', false));
     await setDoc(doc(db, 'community_profiles/alice-public'), profile('alice', true));
+    await setDoc(doc(db, 'community_profiles/legacy-private-field'), {
+      ...profile('legacy-private-field', true),
+      email: 'private@example.com',
+    });
   });
 
   const aliceDb = signedIn(alice);
@@ -123,7 +127,8 @@ test('community profiles keep private profiles owner-only and allow only explici
   await assertSucceeds(getDoc(doc(aliceDb, 'community_profiles/alice')));
   await assertFails(getDoc(doc(bobDb, 'community_profiles/alice')));
   await assertSucceeds(getDoc(doc(bobDb, 'community_profiles/alice-public')));
-  await assertSucceeds(getDocs(query(
+  await assertFails(getDoc(doc(bobDb, 'community_profiles/legacy-private-field')));
+  await assertFails(getDocs(query(
     collection(bobDb, 'community_profiles'),
     where('isPublicPresence', '==', true),
   )));
@@ -133,6 +138,11 @@ test('community profiles keep private profiles owner-only and allow only explici
   await assertFails(deleteDoc(doc(bobDb, 'community_profiles/alice')));
   await assertFails(setDoc(doc(bobDb, 'community_profiles/alice-copy'), profile('alice', true)));
   await assertSucceeds(setDoc(doc(bobDb, 'community_profiles/bob'), profile('bob', true)));
+  await assertFails(updateDoc(doc(bobDb, 'community_profiles/bob'), { email: 'private@example.com' }));
+  await assertFails(setDoc(doc(bobDb, 'community_profiles/bob-with-private-field'), {
+    ...profile('bob', true),
+    email: 'private@example.com',
+  }));
   await assertFails(setDoc(doc(bobDb, 'community_profiles/alice-takeover'), profile('alice', true)));
   await assertSucceeds(deleteDoc(doc(aliceDb, 'community_profiles/alice')));
 });
