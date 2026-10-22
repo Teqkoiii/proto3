@@ -604,3 +604,18 @@ test('booking updates are owner-scoped and reject invalid or unauthenticated pay
   }).bookings.find((item) => item.id === booking.id);
   assert.deepEqual(afterInvalid, afterBlocked);
 });
+
+test('untrusted Origin cannot bypass the allowlist by spoofing X-Forwarded-Host', async (t) => {
+  const { baseUrl } = await startApi(t, { secureCookies: true, allowedOrigins: ['capacitor://localhost'] });
+  const token = firebaseToken('origin-spoof-user');
+  const response = await fetch(`${baseUrl}/api/gym/check-in`, {
+    method: 'POST',
+    headers: {
+      Origin: 'https://untrusted.example',
+      'X-Forwarded-Host': 'untrusted.example',
+      authorization: `Bearer ${token}`,
+    },
+  });
+  assert.equal(response.status, 403);
+});
+
