@@ -209,6 +209,7 @@ service cloud.firestore {
                     userId == request.auth.uid;
       allow list: if isVerifiedDhbwUser() &&
                      isValidId(userId) &&
+                     isValidNotification(resource.data) &&
                      userId == request.auth.uid;
       allow delete: if isVerifiedDhbwUser() && isValidId(userId) && isValidId(notificationId) && userId == request.auth.uid;
       allow update: if isVerifiedDhbwUser() &&
