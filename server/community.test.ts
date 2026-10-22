@@ -11,6 +11,14 @@ test('isDhbwEmail accurately validates official DHBW email domains', () => {
   assert.equal(isDhbwEmail('student@dhbw-mannheim.de'), true);
   assert.equal(isDhbwEmail('info@dhbw.de'), true);
   assert.equal(isDhbwEmail('student@dhbw-mosbach.de'), true);
+  assert.equal(isDhbwEmail('student@lehre.mosbach.dhbw.de'), true);
+  assert.equal(isDhbwEmail('student@mosbach.dhbw.de'), true);
+  assert.equal(isDhbwEmail('STUDENT@MOSBACH.DHBW.DE'), true);
+  assert.equal(isDhbwEmail('student@evil-mosbach.dhbw.de'), false);
+  assert.equal(isDhbwEmail('student@mosbach.dhbw.de.attacker.com'), false);
+  assert.equal(isDhbwEmail('student@evil.dhbw-mosbach.de'), false);
+  assert.equal(isDhbwEmail('student@'), false);
+  assert.equal(isDhbwEmail('@mosbach.dhbw.de'), false);
   assert.equal(isDhbwEmail('student@heilbronn.dhbw.de'), true);
   assert.equal(isDhbwEmail('student@dhbw-attacker.de'), false);
   assert.equal(isDhbwEmail('student@evil.dhbw-attacker.de'), false);
