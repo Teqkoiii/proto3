@@ -159,11 +159,8 @@ service cloud.firestore {
                     isValidId(conversationId) &&
                     isValidConversation(resource.data) &&
                     request.auth.uid in resource.data.participantIds;
-      // This query is used by the real-time chat client. Keep access participant-scoped;
-      // schema allowlists protect client writes, while legacy data must be sanitized separately.
-      allow list: if isVerifiedDhbwUser() &&
-                     isValidConversation(resource.data) &&
-                     request.auth.uid in resource.data.participantIds;
+      // Lists go through the authenticated API, which validates and allowlists every document.
+      allow list: if false;
       allow update: if isVerifiedDhbwUser() &&
                        isValidId(conversationId) &&
                        isValidConversation(existing()) &&
@@ -180,11 +177,8 @@ service cloud.firestore {
                       isValidChatMessage(resource.data) &&
                       exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
                       request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
-        allow list: if isVerifiedDhbwUser() &&
-                       isValidId(conversationId) &&
-                       isValidChatMessage(resource.data) &&
-                       exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
-                       request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
+        // The API verifies parent-conversation participation and validates every message.
+        allow list: if false;
         allow create: if isVerifiedDhbwUser() &&
                          isValidId(messageId) &&
                          incoming().senderId == request.auth.uid &&
@@ -207,10 +201,8 @@ service cloud.firestore {
                     isValidId(notificationId) &&
                     isValidNotification(resource.data) &&
                     userId == request.auth.uid;
-      allow list: if isVerifiedDhbwUser() &&
-                     isValidId(userId) &&
-                     isValidNotification(resource.data) &&
-                     userId == request.auth.uid;
+      // The API validates notification schemas before returning any list result.
+      allow list: if false;
       allow delete: if isVerifiedDhbwUser() && isValidId(userId) && isValidId(notificationId) && userId == request.auth.uid;
       allow update: if isVerifiedDhbwUser() &&
                        isValidId(userId) &&
