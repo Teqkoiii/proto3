@@ -180,7 +180,7 @@ function toSafeNotification(
       typeof value.read !== 'boolean') return null;
   if ('linkUrl' in value &&
       (typeof value.linkUrl !== 'string' || value.linkUrl.length > 500 ||
-       !/^\\/([a-zA-Z0-9_?=&-][a-zA-Z0-9_/?=&-]*)?$/.test(value.linkUrl))) return null;
+       !/^\/([a-zA-Z0-9_?=&-][a-zA-Z0-9_/?=&-]*)?$/.test(value.linkUrl))) return null;
   if ('resourceId' in value && !isValidId(value.resourceId)) return null;
   if ('eventId' in value && !isValidId(value.eventId)) return null;
   if ('createdAt' in value && !isValidTimestamp(value.createdAt)) return null;
