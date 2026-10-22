@@ -378,6 +378,7 @@ test('notifications are private and cross-user delivery requires a real particip
     });
   });
   await assertFails(getDoc(doc(aliceDb, 'users/alice/notifications/legacy-extra-field')));
+  await assertFails(getDocs(collection(aliceDb, 'users/alice/notifications')));
   await assertFails(getDoc(doc(bobDb, 'users/alice/notifications/existing')));
   await assertFails(getDocs(collection(bobDb, 'users/alice/notifications')));
   await assertFails(updateDoc(doc(bobDb, 'users/alice/notifications/existing'), { read: true }));
