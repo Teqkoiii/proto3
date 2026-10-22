@@ -108,7 +108,7 @@ service cloud.firestore {
              (!('linkUrl' in data) || (data.linkUrl is string && data.linkUrl.size() <= 500 && data.linkUrl.matches('^/[a-zA-Z0-9_/?=&-]*$'))) &&
              (!('resourceId' in data) || isValidId(data.resourceId)) &&
              (!('eventId' in data) || isValidId(data.eventId)) &&
-             (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 40));
+             (!('createdAt' in data) || isValidTimestampString(data.createdAt));
     }
 
     // Community Profiles
