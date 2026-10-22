@@ -100,10 +100,14 @@ service cloud.firestore {
 
     // Community Profiles
     match /community_profiles/{profileId} {
+      // Validate stored documents on reads as well as writes so legacy or
+      // Admin-created documents cannot leak fields outside the public schema.
       allow get: if isVerifiedDhbwUser() &&
                     isValidId(profileId) &&
+                    isValidCommunityProfile(existing()) &&
                     (existing().userId == request.auth.uid || existing().isPublicPresence == true);
       allow list: if isVerifiedDhbwUser() &&
+                     isValidCommunityProfile(resource.data) &&
                      (resource.data.userId == request.auth.uid || resource.data.isPublicPresence == true);
       allow create: if isVerifiedDhbwUser() &&
                        isValidId(profileId) &&
