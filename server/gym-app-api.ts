@@ -23,6 +23,39 @@ export interface CommunityConversationWrite {
   createdAt: string;
 }
 
+export interface CommunityConversationDto {
+  id: string;
+  participantIds: string[];
+  participantNames: Record<string, string>;
+  createdAt: string;
+  lastMessageText?: string;
+  lastMessageAt?: string;
+  lastSenderId?: string;
+}
+
+export interface CommunityChatMessageDto {
+  id: string;
+  conversationId: string;
+  senderId: string;
+  senderName: string;
+  text: string;
+  createdAt: string;
+}
+
+export interface CommunityNotificationDto {
+  id: string;
+  userId: string;
+  senderId: string;
+  type: 'partner_request' | 'partner_accepted' | 'new_message' | 'slot_reminder' | 'gym_alert';
+  title: string;
+  message: string;
+  read: boolean;
+  linkUrl?: string;
+  resourceId?: string;
+  eventId?: string;
+  createdAt: string;
+}
+
 export type PartnerNotificationStatus = 'sent' | 'unavailable' | 'failed';
 
 interface GymApiOptions {
@@ -33,6 +66,9 @@ interface GymApiOptions {
   firebaseTokenVerifier?: (token: string) => Promise<VerifiedFirebaseIdentity>;
   partnerNotificationWriter?: (notification: PartnerNotificationWrite) => Promise<void>;
   communityConversationWriter?: (conversation: CommunityConversationWrite) => Promise<void>;
+  communityConversationReader?: (userUid: string) => Promise<CommunityConversationDto[]>;
+  communityMessageReader?: (userUid: string, conversationId: string) => Promise<CommunityChatMessageDto[] | null>;
+  communityNotificationReader?: (userUid: string) => Promise<CommunityNotificationDto[]>;
 }
 
 interface GymSessionRequest extends Request {
