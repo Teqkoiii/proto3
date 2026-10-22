@@ -401,6 +401,15 @@ test('notifications are private and cross-user delivery requires a real particip
     }),
     linkUrl: 'https://untrusted.example',
   }));
+  await assertFails(setDoc(doc(aliceDb, 'users/alice/notifications/protocol-relative-link'), {
+    ...notification({
+      id: 'protocol-relative-link',
+      userId: alice.uid,
+      senderId: alice.uid,
+      type: 'slot_reminder',
+    }),
+    linkUrl: '//untrusted.example',
+  }));
   await assertFails(setDoc(doc(aliceDb, 'users/alice/notifications/extra-field'), {
     ...notification({
       id: 'extra-field',
