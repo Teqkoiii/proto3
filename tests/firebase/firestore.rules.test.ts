@@ -81,6 +81,12 @@ function notification(input: {
   };
 }
 
+test('unmatched healthcheck documents remain denied to unauthenticated users', async () => {
+  await resetFirestore();
+  const publicHealthcheck = doc(environment.unauthenticatedContext().firestore(), 'test/healthcheck');
+  await assertFails(getDoc(publicHealthcheck));
+});
+
 test('Firestore access requires a verified DHBW email and rejects lookalike domains', async () => {
   await resetFirestore();
   const publicProfile = doc(environment.unauthenticatedContext().firestore(), 'community_profiles/alice');
