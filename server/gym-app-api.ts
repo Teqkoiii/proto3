@@ -137,7 +137,10 @@ export function createGymAppApi(database: DatabaseSync, options: GymApiOptions =
 
   app.use((request, response, next) => {
     const origin = request.get('Origin');
-    const effectiveHost = request.get('x-forwarded-host') || request.get('host');
+    // Use the request Host header for Origin validation. X-Forwarded-Host is
+    // proxy-controlled only when every deployment hop reliably strips client values.
+    // Trusting it here would let a client spoof an allowed same-origin host.
+    const effectiveHost = request.get('host');
     let sameOrigin = false;
     if (origin) {
       try {
