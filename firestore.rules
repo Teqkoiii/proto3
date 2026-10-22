@@ -177,14 +177,17 @@ service cloud.firestore {
       allow get: if isVerifiedDhbwUser() &&
                     isValidId(conversationId) &&
                     isValidConversation(resource.data) &&
+                    resource.data.id == conversationId &&
                     request.auth.uid in resource.data.participantIds;
       // Lists go through the authenticated API, which validates and allowlists every document.
       allow list: if false;
       allow update: if isVerifiedDhbwUser() &&
                        isValidId(conversationId) &&
                        isValidConversation(existing()) &&
+                       existing().id == conversationId &&
                        request.auth.uid in existing().participantIds &&
                        isValidConversation(incoming()) &&
+                       incoming().id == conversationId &&
                        incoming().diff(existing()).affectedKeys().hasOnly(['lastMessageText', 'lastMessageAt', 'lastSenderId']) &&
                        incoming().lastSenderId == request.auth.uid;
 
@@ -194,6 +197,8 @@ service cloud.firestore {
                       isValidId(conversationId) &&
                       isValidId(messageId) &&
                       isValidChatMessage(resource.data) &&
+                      resource.data.id == messageId &&
+                      resource.data.conversationId == conversationId &&
                       exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
                       request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
         // The API verifies parent-conversation participation and validates every message.
@@ -203,11 +208,14 @@ service cloud.firestore {
                          incoming().senderId == request.auth.uid &&
                          incoming().conversationId == conversationId &&
                          isValidChatMessage(incoming()) &&
+                         incoming().id == messageId &&
                          exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
                          request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
         allow delete: if isVerifiedDhbwUser() &&
                          isValidId(messageId) &&
                          existing().senderId == request.auth.uid &&
+                         existing().id == messageId &&
+                         existing().conversationId == conversationId &&
                          exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
                          request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
       }
