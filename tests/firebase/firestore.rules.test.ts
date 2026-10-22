@@ -222,7 +222,7 @@ test('conversations and chat messages are limited to conversation participants',
   await assertSucceeds(getDoc(doc(bobDb, 'conversations/conversation-one')));
   await assertFails(getDoc(doc(bobDb, 'conversations/conversation-with-extra-field')));
   await assertFails(getDoc(doc(charlieDb, 'conversations/conversation-one')));
-  await assertSucceeds(getDocs(query(
+  await assertFails(getDocs(query(
     collection(bobDb, 'conversations'),
     where('participantIds', 'array-contains', bob.uid),
   )));
@@ -254,7 +254,7 @@ test('conversations and chat messages are limited to conversation participants',
   await assertSucceeds(getDoc(messageRef));
   await assertSucceeds(getDoc(doc(bobDb, 'conversations/conversation-one/messages/message-one')));
   await assertFails(getDoc(doc(charlieDb, 'conversations/conversation-one/messages/message-one')));
-  await assertSucceeds(getDocs(collection(bobDb, 'conversations/conversation-one/messages')));
+  await assertFails(getDocs(collection(bobDb, 'conversations/conversation-one/messages')));
   await environment.withSecurityRulesDisabled(async (context) => {
     await setDoc(doc(context.firestore(), 'conversations/conversation-one/messages/legacy-extra-field'), {
       id: 'legacy-extra-field',
@@ -364,7 +364,7 @@ test('notifications are private and cross-user delivery requires a real particip
 
   const aliceDb = signedIn(alice);
   const bobDb = signedIn(bob);
-  await assertSucceeds(getDocs(collection(aliceDb, 'users/alice/notifications')));
+  await assertFails(getDocs(collection(aliceDb, 'users/alice/notifications')));
   await assertSucceeds(getDoc(doc(aliceDb, 'users/alice/notifications/existing')));
   await environment.withSecurityRulesDisabled(async (context) => {
     await setDoc(doc(context.firestore(), 'users/alice/notifications/legacy-extra-field'), {
