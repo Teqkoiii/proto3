@@ -14,14 +14,14 @@
 
 ## 2. The "Dirty Dozen" Attack Payloads
 1. **Ghost Field Injection**: Adding an unpermitted `isAdmin: true` to a CommunityProfile update.
-2. **Sender Spoofing in Request**: Setting `senderId: "victim-uid"` while authenticated as `"attacker-uid"` in `/partner_requests`.
-3. **Unauthorized Message Reading**: Reading `/conversations/{convId}/messages` where `request.auth.uid` is not in `participantIds`.
+2. **Sender Spoofing in Request**: Attempting a direct client create with `senderId: "victim-uid"`; partner-request writes are denied to clients.
+3. **Unauthorized Message Reading**: Reading a message outside the caller's conversation; list queries are denied and individual reads require verified membership.
 4. **Message Impersonation**: Creating a message with `senderId: "partner-uid"` in an active conversation.
 5. **Denial of Wallet Payload**: Submitting a 2MB string in `bio` or `text`.
 6. **Path Traversal / Junk ID Attack**: Using `../` or `\x00` in `{conversationId}` path variable.
-7. **Cross-User Notification Snooping**: Reading `/users/victim-uid/notifications` as attacker.
+7. **Cross-User Notification Snooping**: Reading another user's notification document or attempting a raw collection list; both are denied.
 8. **Forged Request Status Escalation**: A third party updating `/partner_requests/{id}` to `accepted`.
 9. **Chat Room Takeover**: Updating `participantIds` on an existing conversation to eject the original member.
 10. **Orphan Message Insertion**: Creating a message pointing to a non-existent conversation document.
-11. **Client Timestamp Manipulation**: Setting `createdAt: "2099-01-01T00:00:00Z"` instead of `request.time`.
+11. **Malformed Timestamp Injection**: Supplying a timestamp that does not match the bounded ISO-8601 format.
 12. **Double Status Re-open**: Transitioning a terminal `cancelled` partner request back to `pending`.
