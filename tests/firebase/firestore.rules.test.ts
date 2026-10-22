@@ -329,12 +329,24 @@ test('notifications are private and cross-user delivery requires a real particip
   await assertFails(getDocs(collection(bobDb, 'users/alice/notifications')));
   await assertFails(updateDoc(doc(bobDb, 'users/alice/notifications/existing'), { read: true }));
   await assertFails(deleteDoc(doc(bobDb, 'users/alice/notifications/existing')));
-  await assertSucceeds(setDoc(doc(aliceDb, 'users/alice/notifications/reminder'), notification({
-    id: 'reminder',
-    userId: alice.uid,
-    senderId: alice.uid,
-    type: 'slot_reminder',
-  })));
+  await assertSucceeds(setDoc(doc(aliceDb, 'users/alice/notifications/reminder'), {
+    ...notification({
+      id: 'reminder',
+      userId: alice.uid,
+      senderId: alice.uid,
+      type: 'slot_reminder',
+    }),
+    linkUrl: '/calendar',
+  }));
+  await assertFails(setDoc(doc(aliceDb, 'users/alice/notifications/external-link'), {
+    ...notification({
+      id: 'external-link',
+      userId: alice.uid,
+      senderId: alice.uid,
+      type: 'slot_reminder',
+    }),
+    linkUrl: 'https://untrusted.example',
+  }));
   await assertFails(setDoc(doc(aliceDb, 'users/alice/notifications/extra-field'), {
     ...notification({
       id: 'extra-field',
