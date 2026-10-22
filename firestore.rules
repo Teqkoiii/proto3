@@ -58,6 +58,10 @@ service cloud.firestore {
 
     function isValidConversation(data) {
       return data.keys().hasAll(['id', 'participantIds']) &&
+             data.keys().hasOnly([
+               'id', 'participantIds', 'participantNames', 'createdAt',
+               'lastMessageText', 'lastMessageAt', 'lastSenderId'
+             ]) &&
              isValidId(data.id) &&
              data.participantIds is list &&
              data.participantIds.size() == 2 &&
@@ -66,6 +70,8 @@ service cloud.firestore {
              data.participantIds[1] is string &&
              data.participantIds[1].size() <= 128 &&
              data.participantIds[0] != data.participantIds[1] &&
+             (!('participantNames' in data) || data.participantNames is map) &&
+             (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 40)) &&
              (!('lastMessageText' in data) || (data.lastMessageText is string && data.lastMessageText.size() <= 500)) &&
              (!('lastMessageAt' in data) || data.lastMessageAt is timestamp) &&
              (!('lastSenderId' in data) ||
@@ -74,22 +80,32 @@ service cloud.firestore {
 
     function isValidChatMessage(data) {
       return data.keys().hasAll(['id', 'conversationId', 'senderId', 'text']) &&
+             data.keys().hasOnly(['id', 'conversationId', 'senderId', 'senderName', 'text', 'createdAt']) &&
              isValidId(data.id) &&
              data.conversationId is string && data.conversationId.size() <= 128 &&
              data.senderId is string && data.senderId.size() <= 128 &&
              data.text is string && data.text.size() > 0 && data.text.size() <= 1000 &&
-             (!('senderName' in data) || (data.senderName is string && data.senderName.size() <= 60));
+             (!('senderName' in data) || (data.senderName is string && data.senderName.size() <= 60)) &&
+             (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 40));
     }
 
     function isValidNotification(data) {
       return data.keys().hasAll(['id', 'userId', 'senderId', 'type', 'title', 'message', 'read']) &&
+             data.keys().hasOnly([
+               'id', 'userId', 'senderId', 'type', 'title', 'message', 'read',
+               'linkUrl', 'resourceId', 'eventId', 'createdAt'
+             ]) &&
              isValidId(data.id) &&
              data.userId is string && data.userId.size() <= 128 &&
              data.senderId is string && data.senderId.size() <= 128 &&
              data.type in ['partner_request', 'partner_accepted', 'new_message', 'slot_reminder', 'gym_alert'] &&
              data.title is string && data.title.size() <= 120 &&
              data.message is string && data.message.size() <= 300 &&
-             data.read is bool;
+             data.read is bool &&
+             (!('linkUrl' in data) || (data.linkUrl is string && data.linkUrl.size() <= 500)) &&
+             (!('resourceId' in data) || isValidId(data.resourceId)) &&
+             (!('eventId' in data) || isValidId(data.eventId)) &&
+             (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 40));
     }
 
     // Community Profiles
