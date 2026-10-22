@@ -217,6 +217,47 @@ test('partner requests are readable only by participants and writes are server-o
   }));
 });
 
+test('partner request reads reject malformed documents and mismatched stored IDs', async () => {
+  await resetFirestore();
+  await environment.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await setDoc(doc(db, 'partner_requests/private-field'), {
+      senderId: alice.uid,
+      receiverId: bob.uid,
+      status: 'pending',
+      note: 'Valid-looking request',
+      privateEmail: 'must-not-leak@example.com',
+    });
+    await setDoc(doc(db, 'partner_requests/path-id-mismatch'), {
+      id: 'different-id',
+      senderId: alice.uid,
+      receiverId: bob.uid,
+      status: 'pending',
+    });
+    await setDoc(doc(db, 'partner_requests/valid-request'), {
+      id: 'valid-request',
+      senderId: alice.uid,
+      receiverId: bob.uid,
+      status: 'pending',
+      note: 'Meet at the gym',
+      createdAt: '2026-10-22T10:00:00.000Z',
+      updatedAt: '2026-10-22T10:00:00.000Z',
+    });
+  });
+
+  const aliceDb = signedIn(alice);
+  const bobDb = signedIn(bob);
+  await assertFails(getDoc(doc(aliceDb, 'partner_requests/private-field')));
+  await assertFails(getDoc(doc(bobDb, 'partner_requests/private-field')));
+  await assertFails(getDoc(doc(aliceDb, 'partner_requests/path-id-mismatch')));
+  await assertSucceeds(getDoc(doc(aliceDb, 'partner_requests/valid-request')));
+  await assertSucceeds(getDoc(doc(bobDb, 'partner_requests/valid-request')));
+  await assertFails(getDocs(query(
+    collection(aliceDb, 'partner_requests'),
+    where('senderId', '==', alice.uid),
+  )));
+});
+
 test('conversations and chat messages are limited to conversation participants', async () => {
   await resetFirestore();
   await environment.withSecurityRulesDisabled(async (context) => {
