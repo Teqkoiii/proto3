@@ -194,6 +194,11 @@ test('conversations and chat messages are limited to conversation participants',
       participantNames: { alice: 'Alice', bob: 'Bob' },
       lastMessageText: 'Existing chat',
     });
+    await setDoc(doc(db, 'conversations/conversation-with-extra-field'), {
+      id: 'conversation-with-extra-field',
+      participantIds: [alice.uid, bob.uid],
+      privateEmail: 'private@example.com',
+    });
     await setDoc(doc(db, 'conversations/conversation-one/messages/message-one'), {
       id: 'message-one',
       conversationId: 'conversation-one',
@@ -210,6 +215,7 @@ test('conversations and chat messages are limited to conversation participants',
   const messageRef = doc(aliceDb, 'conversations/conversation-one/messages/message-one');
   await assertSucceeds(getDoc(conversationRef));
   await assertSucceeds(getDoc(doc(bobDb, 'conversations/conversation-one')));
+  await assertFails(getDoc(doc(bobDb, 'conversations/conversation-with-extra-field')));
   await assertFails(getDoc(doc(charlieDb, 'conversations/conversation-one')));
   await assertSucceeds(getDocs(query(
     collection(bobDb, 'conversations'),
@@ -251,6 +257,14 @@ test('conversations and chat messages are limited to conversation participants',
     senderId: bob.uid,
     senderName: 'Bob',
     text: 'Reply',
+  }));
+  await assertFails(setDoc(doc(bobDb, 'conversations/conversation-one/messages/extra-field'), {
+    id: 'extra-field',
+    conversationId: 'conversation-one',
+    senderId: bob.uid,
+    senderName: 'Bob',
+    text: 'Reply',
+    privateEmail: 'private@example.com',
   }));
   await assertFails(setDoc(doc(charlieDb, 'conversations/forged-conversation'), {
     id: 'forged-conversation',
@@ -321,6 +335,15 @@ test('notifications are private and cross-user delivery requires a real particip
     senderId: alice.uid,
     type: 'slot_reminder',
   })));
+  await assertFails(setDoc(doc(aliceDb, 'users/alice/notifications/extra-field'), {
+    ...notification({
+      id: 'extra-field',
+      userId: alice.uid,
+      senderId: alice.uid,
+      type: 'slot_reminder',
+    }),
+    privateEmail: 'private@example.com',
+  }));
   await assertFails(setDoc(doc(aliceDb, 'users/bob/notifications/spoofed-reminder'), notification({
     id: 'spoofed-reminder',
     userId: bob.uid,
