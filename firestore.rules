@@ -102,7 +102,7 @@ service cloud.firestore {
              data.title is string && data.title.size() <= 120 &&
              data.message is string && data.message.size() <= 300 &&
              data.read is bool &&
-             (!('linkUrl' in data) || (data.linkUrl is string && data.linkUrl.size() <= 500 && data.linkUrl.matches('^/[a-zA-Z0-9_/?=&-]* &&
+             (!('linkUrl' in data) || (data.linkUrl is string && data.linkUrl.size() <= 500 && data.linkUrl.matches('^/[a-zA-Z0-9_/?=&-]*$')))
              (!('resourceId' in data) || isValidId(data.resourceId)) &&
              (!('eventId' in data) || isValidId(data.eventId)) &&
              (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 40));
