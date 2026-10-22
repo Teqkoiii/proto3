@@ -29,6 +29,8 @@ const DHBW_EMAIL_DOMAINS = new Set([
   'dhbw.de',
   'heilbronn.dhbw.de',
   'lehre.dhbw-mannheim.de',
+  'lehre.mosbach.dhbw.de',
+  'mosbach.dhbw.de',
 ]);
 
 export function isDhbwEmail(email: string): boolean {
