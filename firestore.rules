@@ -227,6 +227,7 @@ service cloud.firestore {
                     isValidId(userId) &&
                     isValidId(notificationId) &&
                     isValidNotification(resource.data) &&
+                    resource.data.id == notificationId &&
                     userId == request.auth.uid;
       // The API validates notification schemas before returning any list result.
       allow list: if false;
@@ -235,12 +236,15 @@ service cloud.firestore {
                        isValidId(userId) &&
                        isValidId(notificationId) &&
                        userId == request.auth.uid &&
+                       existing().id == notificationId &&
+                       incoming().id == notificationId &&
                        incoming().diff(existing()).affectedKeys().hasOnly(['read']) &&
                        incoming().read is bool;
       allow create: if isVerifiedDhbwUser() &&
                        isValidId(userId) &&
                        isValidId(notificationId) &&
                        isValidNotification(incoming()) &&
+                       incoming().id == notificationId &&
                        canCreateNotification(userId, incoming());
     }
   }
