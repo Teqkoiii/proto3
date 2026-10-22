@@ -162,6 +162,7 @@ service cloud.firestore {
       // This query is used by the real-time chat client. Keep access participant-scoped;
       // schema allowlists protect client writes, while legacy data must be sanitized separately.
       allow list: if isVerifiedDhbwUser() &&
+                     isValidConversation(resource.data) &&
                      request.auth.uid in resource.data.participantIds;
       allow update: if isVerifiedDhbwUser() &&
                        isValidId(conversationId) &&
@@ -181,6 +182,7 @@ service cloud.firestore {
                       request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
         allow list: if isVerifiedDhbwUser() &&
                        isValidId(conversationId) &&
+                       isValidChatMessage(resource.data) &&
                        exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
                        request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
         allow create: if isVerifiedDhbwUser() &&
