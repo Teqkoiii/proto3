@@ -389,6 +389,16 @@ test('notifications are private and cross-user delivery requires a real particip
       senderId: alice.uid,
       text: 'A valid chat message',
     });
+    await setDoc(doc(db, 'conversations/wrong-id'), {
+      id: 'different-id',
+      participantIds: [alice.uid, bob.uid],
+    });
+    await setDoc(doc(db, 'conversations/wrong-id/messages/wrong-message'), {
+      id: 'wrong-message',
+      conversationId: 'wrong-id',
+      senderId: alice.uid,
+      text: 'Message in malformed conversation',
+    });
     await setDoc(doc(db, 'users/alice/notifications/existing'), notification({
       id: 'existing',
       userId: alice.uid,
@@ -494,6 +504,14 @@ test('notifications are private and cross-user delivery requires a real particip
     senderId: bob.uid,
     type: 'partner_accepted',
     resourceId: 'request-one',
+  })));
+  await assertFails(setDoc(doc(aliceDb, 'users/bob/notifications/malformed-source'), notification({
+    id: 'malformed-source',
+    userId: bob.uid,
+    senderId: alice.uid,
+    type: 'new_message',
+    resourceId: 'wrong-id',
+    eventId: 'wrong-message',
   })));
   await assertSucceeds(setDoc(doc(aliceDb, 'users/bob/notifications/new-message'), notification({
     id: 'new-message',
