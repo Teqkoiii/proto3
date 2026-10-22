@@ -24,9 +24,14 @@ service cloud.firestore {
                  isValidId(data.resourceId) &&
                  isValidId(data.eventId) &&
                  exists(/databases/$(database)/documents/conversations/$(data.resourceId)) &&
+                 isValidConversation(get(/databases/$(database)/documents/conversations/$(data.resourceId)).data) &&
+                 get(/databases/$(database)/documents/conversations/$(data.resourceId)).data.id == data.resourceId &&
                  request.auth.uid in get(/databases/$(database)/documents/conversations/$(data.resourceId)).data.participantIds &&
                  userId in get(/databases/$(database)/documents/conversations/$(data.resourceId)).data.participantIds &&
                  exists(/databases/$(database)/documents/conversations/$(data.resourceId)/messages/$(data.eventId)) &&
+                 isValidChatMessage(get(/databases/$(database)/documents/conversations/$(data.resourceId)/messages/$(data.eventId)).data) &&
+                 get(/databases/$(database)/documents/conversations/$(data.resourceId)/messages/$(data.eventId)).data.id == data.eventId &&
+                 get(/databases/$(database)/documents/conversations/$(data.resourceId)/messages/$(data.eventId)).data.conversationId == data.resourceId &&
                  get(/databases/$(database)/documents/conversations/$(data.resourceId)/messages/$(data.eventId)).data.senderId == request.auth.uid
                )
              );
