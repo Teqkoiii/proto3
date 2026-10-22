@@ -112,7 +112,121 @@ service cloud.firestore {
              data.title is string && data.title.size() <= 120 &&
              data.message is string && data.message.size() <= 300 &&
              data.read is bool &&
-             (!('linkUrl' in data) || (data.linkUrl is string && data.linkUrl.size() <= 500 && data.linkUrl.matches('^/[a-zA-Z0-9_/?=&-]*$'))) &&
+             (!('linkUrl' in data) || (data.linkUrl is string && data.linkUrl.size() <= 500 && data.linkUrl.matches('^/([a-zA-Z0-9_?=&-][a-zA-Z0-9_/?=&-]*)?)) &&
+             (!('resourceId' in data) || isValidId(data.resourceId)) &&
+             (!('eventId' in data) || isValidId(data.eventId)) &&
+             (!('createdAt' in data) || isValidTimestampString(data.createdAt));
+    }
+
+    // Community Profiles
+    match /community_profiles/{profileId} {
+      // Validate stored documents too, so legacy/Admin-created records cannot leak extra fields.
+      allow get: if isVerifiedDhbwUser() &&
+                    isValidId(profileId) &&
+                    isValidCommunityProfile(existing()) &&
+                    (existing().userId == request.auth.uid || existing().isPublicPresence == true);
+      // The authenticated API returns a safe DTO; Firestore rules cannot redact fields in list results.
+      allow list: if false;
+      allow create: if isVerifiedDhbwUser() &&
+                       isValidId(profileId) &&
+                       profileId == request.auth.uid &&
+                       incoming().userId == request.auth.uid &&
+                       isValidCommunityProfile(incoming());
+      allow update: if isVerifiedDhbwUser() &&
+                       isValidId(profileId) &&
+                       profileId == request.auth.uid &&
+                       existing().userId == request.auth.uid &&
+                       incoming().userId == existing().userId &&
+                       isValidCommunityProfile(incoming());
+      allow delete: if isVerifiedDhbwUser() &&
+                       isValidId(profileId) &&
+                       profileId == request.auth.uid &&
+                       existing().userId == request.auth.uid;
+    }
+
+    // Training Partner Requests
+    match /partner_requests/{requestId} {
+      allow get: if isVerifiedDhbwUser() &&
+                    isValidId(requestId) &&
+                    (resource.data.senderId == request.auth.uid || resource.data.receiverId == request.auth.uid);
+      allow list: if isVerifiedDhbwUser() &&
+                     (resource.data.senderId == request.auth.uid || resource.data.receiverId == request.auth.uid);
+    }
+
+    // Direct Chat Conversations
+    match /conversations/{conversationId} {
+      allow get: if isVerifiedDhbwUser() &&
+                    isValidId(conversationId) &&
+                    isValidConversation(resource.data) &&
+                    request.auth.uid in resource.data.participantIds;
+      // This query is used by the real-time chat client. Keep access participant-scoped;
+      // schema allowlists protect client writes, while legacy data must be sanitized separately.
+      allow list: if isVerifiedDhbwUser() &&
+                     isValidConversation(resource.data) &&
+                     request.auth.uid in resource.data.participantIds;
+      allow update: if isVerifiedDhbwUser() &&
+                       isValidId(conversationId) &&
+                       isValidConversation(existing()) &&
+                       request.auth.uid in existing().participantIds &&
+                       isValidConversation(incoming()) &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['lastMessageText', 'lastMessageAt', 'lastSenderId']) &&
+                       incoming().lastSenderId == request.auth.uid;
+
+      // Nested Chat Messages
+      match /messages/{messageId} {
+        allow get: if isVerifiedDhbwUser() &&
+                      isValidId(conversationId) &&
+                      isValidId(messageId) &&
+                      isValidChatMessage(resource.data) &&
+                      exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
+                      request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
+        allow list: if isVerifiedDhbwUser() &&
+                       isValidId(conversationId) &&
+                       isValidChatMessage(resource.data) &&
+                       exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
+                       request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
+        allow create: if isVerifiedDhbwUser() &&
+                         isValidId(messageId) &&
+                         incoming().senderId == request.auth.uid &&
+                         incoming().conversationId == conversationId &&
+                         isValidChatMessage(incoming()) &&
+                         exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
+                         request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
+        allow delete: if isVerifiedDhbwUser() &&
+                         isValidId(messageId) &&
+                         existing().senderId == request.auth.uid &&
+                         exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
+                         request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
+      }
+    }
+
+    // User Private Notifications & Slot Reminders
+    match /users/{userId}/notifications/{notificationId} {
+      allow get: if isVerifiedDhbwUser() &&
+                    isValidId(userId) &&
+                    isValidId(notificationId) &&
+                    isValidNotification(resource.data) &&
+                    userId == request.auth.uid;
+      allow list: if isVerifiedDhbwUser() &&
+                     isValidId(userId) &&
+                     isValidNotification(resource.data) &&
+                     userId == request.auth.uid;
+      allow delete: if isVerifiedDhbwUser() && isValidId(userId) && isValidId(notificationId) && userId == request.auth.uid;
+      allow update: if isVerifiedDhbwUser() &&
+                       isValidId(userId) &&
+                       isValidId(notificationId) &&
+                       userId == request.auth.uid &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['read']) &&
+                       incoming().read is bool;
+      allow create: if isVerifiedDhbwUser() &&
+                       isValidId(userId) &&
+                       isValidId(notificationId) &&
+                       isValidNotification(incoming()) &&
+                       canCreateNotification(userId, incoming());
+    }
+  }
+}
+))) &&
              (!('resourceId' in data) || isValidId(data.resourceId)) &&
              (!('eventId' in data) || isValidId(data.eventId)) &&
              (!('createdAt' in data) || isValidTimestampString(data.createdAt));
