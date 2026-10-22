@@ -211,11 +211,6 @@ service cloud.firestore {
     }
   }
 }
-))) &&
-             (!('resourceId' in data) || isValidId(data.resourceId)) &&
-             (!('eventId' in data) || isValidId(data.eventId)) &&
-             (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 40));
-    }
 
     // Community Profiles
     match /community_profiles/{profileId} {
