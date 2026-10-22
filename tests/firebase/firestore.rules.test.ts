@@ -282,6 +282,10 @@ test('conversations and chat messages are limited to conversation participants',
       id: 'different-id',
       participantIds: [alice.uid, bob.uid],
     });
+    await setDoc(doc(db, 'conversations/conversation-invalid-participant-id'), {
+      id: 'conversation-invalid-participant-id',
+      participantIds: ['', bob.uid],
+    });
     await setDoc(doc(db, 'conversations/path-id-mismatch/messages/valid-child-under-invalid-parent'), {
       id: 'valid-child-under-invalid-parent',
       conversationId: 'path-id-mismatch',
@@ -304,6 +308,7 @@ test('conversations and chat messages are limited to conversation participants',
   await assertSucceeds(getDoc(conversationRef));
   await assertSucceeds(getDoc(doc(bobDb, 'conversations/conversation-one')));
   await assertFails(getDoc(doc(aliceDb, 'conversations/path-id-mismatch')));
+  await assertFails(getDoc(doc(bobDb, 'conversations/conversation-invalid-participant-id')));
   // A valid child message must not bypass validation of its malformed parent.
   await assertFails(getDoc(doc(bobDb, 'conversations/path-id-mismatch/messages/valid-child-under-invalid-parent')));
   await assertFails(setDoc(doc(bobDb, 'conversations/path-id-mismatch/messages/bob-write'), {
