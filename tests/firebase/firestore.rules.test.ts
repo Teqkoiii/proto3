@@ -188,11 +188,14 @@ test('partner requests are readable only by participants and writes are server-o
   await assertSucceeds(getDoc(requestRef));
   await assertSucceeds(getDoc(doc(bobDb, 'partner_requests/request-one')));
   await assertFails(getDoc(doc(outsiderDb, 'partner_requests/request-one')));
-  await assertSucceeds(getDocs(query(
+  // Raw Firestore lists are denied: query constraints cannot prove the full
+  // document schema, and Firestore rules cannot redact unexpected private fields.
+  // The authenticated API is the supported listing path and returns scoped DTOs.
+  await assertFails(getDocs(query(
     collection(aliceDb, 'partner_requests'),
     where('senderId', '==', alice.uid),
   )));
-  await assertSucceeds(getDocs(query(
+  await assertFails(getDocs(query(
     collection(bobDb, 'partner_requests'),
     where('receiverId', '==', bob.uid),
   )));
