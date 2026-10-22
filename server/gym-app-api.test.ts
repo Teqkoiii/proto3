@@ -523,7 +523,11 @@ test('cross-origin preflight allows Firebase bearer authorization for exact orig
 
   const rejected = await fetch(`${baseUrl}/api/gym/check-in`, {
     method: 'POST',
-    headers: { Origin: 'https://untrusted.example' },
+    headers: {
+      Origin: 'https://untrusted.example',
+      'X-Forwarded-Host': 'untrusted.example',
+      'X-Forwarded-Proto': 'https',
+    },
   });
   assert.equal(rejected.status, 403);
 });
