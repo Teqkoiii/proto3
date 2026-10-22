@@ -92,11 +92,6 @@ service cloud.firestore {
              data.read is bool;
     }
 
-    // Connection Healthcheck Document
-    match /test/{docId} {
-      allow read: if true;
-    }
-
     // Community Profiles
     match /community_profiles/{profileId} {
       allow get: if isVerifiedDhbwUser() &&
