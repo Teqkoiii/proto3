@@ -127,6 +127,17 @@ test('community profiles deny raw listing and reject extra fields on writes and 
   await assertSucceeds(getDoc(doc(aliceDb, 'community_profiles/alice')));
   await assertFails(getDoc(doc(bobDb, 'community_profiles/alice')));
   await assertSucceeds(getDoc(doc(bobDb, 'community_profiles/alice-public')));
+  // Public profile reads must reject nested objects in string-list fields.
+  await environment.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), 'community_profiles/legacy-nested-private-field'), {
+      ...profile('legacy-nested-private-field', true),
+      trainingGoals: [{ privateEmail: 'must-not-leak@example.com' }],
+    });
+    await setDoc(doc(context.firestore(), 'community_profiles/path-user-mismatch'), profile('alice', true));
+  });
+  await assertFails(getDoc(doc(bobDb, 'community_profiles/legacy-nested-private-field')));
+  await assertFails(getDoc(doc(bobDb, 'community_profiles/path-user-mismatch')));
+
   await assertFails(getDoc(doc(bobDb, 'community_profiles/legacy-private-field')));
   await assertFails(getDocs(query(
     collection(bobDb, 'community_profiles'),
@@ -138,6 +149,16 @@ test('community profiles deny raw listing and reject extra fields on writes and 
   await assertFails(deleteDoc(doc(bobDb, 'community_profiles/alice')));
   await assertFails(setDoc(doc(bobDb, 'community_profiles/alice-copy'), profile('alice', true)));
   await assertSucceeds(setDoc(doc(bobDb, 'community_profiles/bob'), profile('bob', true)));
+  await assertFails(updateDoc(doc(bobDb, 'community_profiles/bob'), {
+    trainingGoals: [{ privateEmail: 'must-not-leak@example.com' }],
+  }));
+  await assertFails(updateDoc(doc(bobDb, 'community_profiles/bob'), {
+    preferredTimes: [{ privateEmail: 'must-not-leak@example.com' }],
+  }));
+  await assertFails(updateDoc(doc(bobDb, 'community_profiles/bob'), {
+    interests: [{ privateEmail: 'must-not-leak@example.com' }],
+  }));
+
   await assertFails(updateDoc(doc(bobDb, 'community_profiles/bob'), { email: 'private@example.com' }));
   await assertFails(setDoc(doc(bobDb, 'community_profiles/bob-with-private-field'), {
     ...profile('bob', true),
