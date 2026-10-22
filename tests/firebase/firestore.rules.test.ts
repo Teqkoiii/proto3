@@ -145,6 +145,8 @@ test('community profiles deny raw listing and reject extra fields on writes and 
   )));
   await assertFails(getDocs(collection(bobDb, 'community_profiles')));
   await assertSucceeds(updateDoc(doc(aliceDb, 'community_profiles/alice'), { firstName: 'Alice updated' }));
+  await assertSucceeds(updateDoc(doc(aliceDb, 'community_profiles/alice'), { updatedAt: '2026-10-22T10:00:00.000Z' }));
+  await assertFails(updateDoc(doc(aliceDb, 'community_profiles/alice'), { updatedAt: 'tomorrow at noon' }));
   await assertFails(updateDoc(doc(bobDb, 'community_profiles/alice'), { firstName: 'Takeover' }));
   await assertFails(deleteDoc(doc(bobDb, 'community_profiles/alice')));
   await assertFails(setDoc(doc(bobDb, 'community_profiles/alice-copy'), profile('alice', true)));
