@@ -44,6 +44,24 @@ service cloud.firestore {
       return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
+    // Firestore rules do not support arbitrary loops. Validate each bounded
+    // list item explicitly so nested maps/objects cannot smuggle private fields
+    // through a public profile read.
+    function isBoundedStringList(values) {
+      return values is list &&
+             values.size() <= 10 &&
+             (values.size() < 1 || (values[0] is string && values[0].size() <= 100)) &&
+             (values.size() < 2 || (values[1] is string && values[1].size() <= 100)) &&
+             (values.size() < 3 || (values[2] is string && values[2].size() <= 100)) &&
+             (values.size() < 4 || (values[3] is string && values[3].size() <= 100)) &&
+             (values.size() < 5 || (values[4] is string && values[4].size() <= 100)) &&
+             (values.size() < 6 || (values[5] is string && values[5].size() <= 100)) &&
+             (values.size() < 7 || (values[6] is string && values[6].size() <= 100)) &&
+             (values.size() < 8 || (values[7] is string && values[7].size() <= 100)) &&
+             (values.size() < 9 || (values[8] is string && values[8].size() <= 100)) &&
+             (values.size() < 10 || (values[9] is string && values[9].size() <= 100));
+    }
+
     function isValidCommunityProfile(data) {
       return data.keys().hasAll(['userId', 'firstName']) &&
              data.keys().hasOnly([
@@ -56,9 +74,9 @@ service cloud.firestore {
              (!('courseOfStudy' in data) || (data.courseOfStudy is string && data.courseOfStudy.size() <= 100)) &&
              (!('bio' in data) || (data.bio is string && data.bio.size() <= 300)) &&
              (!('isPublicPresence' in data) || data.isPublicPresence is bool) &&
-             (!('trainingGoals' in data) || (data.trainingGoals is list && data.trainingGoals.size() <= 10)) &&
-             (!('preferredTimes' in data) || (data.preferredTimes is list && data.preferredTimes.size() <= 10)) &&
-             (!('interests' in data) || (data.interests is list && data.interests.size() <= 10)) &&
+             (!('trainingGoals' in data) || isBoundedStringList(data.trainingGoals)) &&
+             (!('preferredTimes' in data) || isBoundedStringList(data.preferredTimes)) &&
+             (!('interests' in data) || isBoundedStringList(data.interests)) &&
              (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 40));
     }
 
@@ -105,6 +123,7 @@ service cloud.firestore {
       allow get: if isVerifiedDhbwUser() &&
                     isValidId(profileId) &&
                     isValidCommunityProfile(existing()) &&
+                    profileId == existing().userId &&
                     (existing().userId == request.auth.uid || existing().isPublicPresence == true);
       // Public profile discovery is served by the authenticated API, which
       // returns an explicit safe DTO. Do not list raw Firestore documents:
