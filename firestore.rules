@@ -141,6 +141,26 @@ service cloud.firestore {
              (!('createdAt' in data) || isValidTimestampString(data.createdAt));
     }
 
+    function isValidPartnerRequest(data) {
+      return data.keys().hasAll(['senderId', 'receiverId', 'status']) &&
+             data.keys().hasOnly([
+               'id', 'senderId', 'receiverId', 'senderName', 'receiverName',
+               'proposedDate', 'note', 'status', 'isIncoming', 'createdAt', 'updatedAt'
+             ]) &&
+             data.senderId is string && data.senderId.size() > 0 && data.senderId.size() <= 128 &&
+             data.receiverId is string && data.receiverId.size() > 0 && data.receiverId.size() <= 128 &&
+             data.senderId != data.receiverId &&
+             data.status in ['pending', 'accepted', 'declined', 'cancelled'] &&
+             (!('id' in data) || isValidId(data.id)) &&
+             (!('senderName' in data) || (data.senderName is string && data.senderName.size() <= 60)) &&
+             (!('receiverName' in data) || (data.receiverName is string && data.receiverName.size() <= 60)) &&
+             (!('proposedDate' in data) || data.proposedDate == null || isValidTimestampString(data.proposedDate)) &&
+             (!('note' in data) || (data.note is string && data.note.size() <= 200)) &&
+             (!('isIncoming' in data) || data.isIncoming is bool) &&
+             (!('createdAt' in data) || isValidTimestampString(data.createdAt)) &&
+             (!('updatedAt' in data) || isValidTimestampString(data.updatedAt));
+    }
+
     // Community Profiles
     match /community_profiles/{profileId} {
       // Validate stored documents too, so legacy/Admin-created records cannot leak extra fields.
@@ -172,8 +192,13 @@ service cloud.firestore {
     match /partner_requests/{requestId} {
       allow get: if isVerifiedDhbwUser() &&
                     isValidId(requestId) &&
+                    isValidPartnerRequest(resource.data) &&
+                    (!('id' in resource.data) || resource.data.id == requestId) &&
                     (resource.data.senderId == request.auth.uid || resource.data.receiverId == request.auth.uid);
       allow list: if isVerifiedDhbwUser() &&
+                     isValidId(requestId) &&
+                     isValidPartnerRequest(resource.data) &&
+                     (!('id' in resource.data) || resource.data.id == requestId) &&
                      (resource.data.senderId == request.auth.uid || resource.data.receiverId == request.auth.uid);
     }
 
