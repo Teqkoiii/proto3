@@ -619,3 +619,16 @@ test('untrusted Origin cannot bypass the allowlist by spoofing X-Forwarded-Host'
   assert.equal(response.status, 403);
 });
 
+test('same host with a different scheme is not treated as same-origin', async (t) => {
+  const { baseUrl } = await startApi(t);
+  const token = firebaseToken('origin-scheme-user');
+  const requestHost = new URL(baseUrl).host;
+  const response = await fetch(`${baseUrl}/api/gym/session`, {
+    headers: {
+      Origin: `https://${requestHost}`,
+      authorization: `Bearer ${token}`,
+    },
+  });
+  assert.equal(response.status, 403);
+});
+
