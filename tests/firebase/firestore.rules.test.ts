@@ -415,9 +415,24 @@ test('notifications are private and cross-user delivery requires a real particip
   await assertFails(getDoc(doc(aliceDb, 'users/alice/notifications/legacy-extra-field')));
   await assertFails(getDocs(collection(aliceDb, 'users/alice/notifications')));
   await assertFails(getDoc(doc(bobDb, 'users/alice/notifications/existing')));
+  await environment.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), 'users/alice/notifications/path-id-mismatch'), notification({
+      id: 'different-notification-id',
+      userId: alice.uid,
+      senderId: alice.uid,
+      type: 'slot_reminder',
+    }));
+  });
+  await assertFails(getDoc(doc(aliceDb, 'users/alice/notifications/path-id-mismatch')));
   await assertFails(getDocs(collection(bobDb, 'users/alice/notifications')));
   await assertFails(updateDoc(doc(bobDb, 'users/alice/notifications/existing'), { read: true }));
   await assertFails(deleteDoc(doc(bobDb, 'users/alice/notifications/existing')));
+  await assertFails(setDoc(doc(aliceDb, 'users/alice/notifications/create-path-id-mismatch'), notification({
+    id: 'different-notification-id',
+    userId: alice.uid,
+    senderId: alice.uid,
+    type: 'slot_reminder',
+  })));
   await assertSucceeds(setDoc(doc(aliceDb, 'users/alice/notifications/reminder'), {
     ...notification({
       id: 'reminder',
