@@ -24,9 +24,14 @@ service cloud.firestore {
                  isValidId(data.resourceId) &&
                  isValidId(data.eventId) &&
                  exists(/databases/$(database)/documents/conversations/$(data.resourceId)) &&
+                 isValidConversation(get(/databases/$(database)/documents/conversations/$(data.resourceId)).data) &&
+                 get(/databases/$(database)/documents/conversations/$(data.resourceId)).data.id == data.resourceId &&
                  request.auth.uid in get(/databases/$(database)/documents/conversations/$(data.resourceId)).data.participantIds &&
                  userId in get(/databases/$(database)/documents/conversations/$(data.resourceId)).data.participantIds &&
                  exists(/databases/$(database)/documents/conversations/$(data.resourceId)/messages/$(data.eventId)) &&
+                 isValidChatMessage(get(/databases/$(database)/documents/conversations/$(data.resourceId)/messages/$(data.eventId)).data) &&
+                 get(/databases/$(database)/documents/conversations/$(data.resourceId)/messages/$(data.eventId)).data.id == data.eventId &&
+                 get(/databases/$(database)/documents/conversations/$(data.resourceId)/messages/$(data.eventId)).data.conversationId == data.resourceId &&
                  get(/databases/$(database)/documents/conversations/$(data.resourceId)/messages/$(data.eventId)).data.senderId == request.auth.uid
                )
              );
@@ -41,64 +46,129 @@ service cloud.firestore {
     }
 
     function isValidId(id) {
-      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_-]+$');
+    }
+    function isValidTimestampString(value) {
+      return value is string && value.size() <= 40 &&
+             value.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?(Z|[+-][0-9]{2}:[0-9]{2})$');
+    }
+
+    // Firestore rules do not support arbitrary loops. Validate each bounded
+    // list item explicitly so nested maps/objects cannot smuggle private fields
+    // through a public profile read.
+    function isBoundedStringList(values) {
+      return values is list &&
+             values.size() <= 10 &&
+             (values.size() < 1 || (values[0] is string && values[0].size() <= 100)) &&
+             (values.size() < 2 || (values[1] is string && values[1].size() <= 100)) &&
+             (values.size() < 3 || (values[2] is string && values[2].size() <= 100)) &&
+             (values.size() < 4 || (values[3] is string && values[3].size() <= 100)) &&
+             (values.size() < 5 || (values[4] is string && values[4].size() <= 100)) &&
+             (values.size() < 6 || (values[5] is string && values[5].size() <= 100)) &&
+             (values.size() < 7 || (values[6] is string && values[6].size() <= 100)) &&
+             (values.size() < 8 || (values[7] is string && values[7].size() <= 100)) &&
+             (values.size() < 9 || (values[8] is string && values[8].size() <= 100)) &&
+             (values.size() < 10 || (values[9] is string && values[9].size() <= 100));
     }
 
     function isValidCommunityProfile(data) {
       return data.keys().hasAll(['userId', 'firstName']) &&
+             data.keys().hasOnly([
+               'userId', 'firstName', 'lastNameInitial', 'courseOfStudy', 'bio',
+               'isPublicPresence', 'trainingGoals', 'preferredTimes', 'interests', 'updatedAt'
+             ]) &&
              data.userId is string && data.userId.size() <= 128 &&
              data.firstName is string && data.firstName.size() <= 50 &&
              (!('lastNameInitial' in data) || (data.lastNameInitial is string && data.lastNameInitial.size() <= 5)) &&
              (!('courseOfStudy' in data) || (data.courseOfStudy is string && data.courseOfStudy.size() <= 100)) &&
              (!('bio' in data) || (data.bio is string && data.bio.size() <= 300)) &&
              (!('isPublicPresence' in data) || data.isPublicPresence is bool) &&
-             (!('trainingGoals' in data) || (data.trainingGoals is list && data.trainingGoals.size() <= 10)) &&
-             (!('preferredTimes' in data) || (data.preferredTimes is list && data.preferredTimes.size() <= 10));
+             (!('trainingGoals' in data) || isBoundedStringList(data.trainingGoals)) &&
+             (!('preferredTimes' in data) || isBoundedStringList(data.preferredTimes)) &&
+             (!('interests' in data) || isBoundedStringList(data.interests)) &&
+             (!('updatedAt' in data) || isValidTimestampString(data.updatedAt));
     }
 
     function isValidConversation(data) {
       return data.keys().hasAll(['id', 'participantIds']) &&
+             data.keys().hasOnly([
+               'id', 'participantIds', 'participantNames', 'createdAt',
+               'lastMessageText', 'lastMessageAt', 'lastSenderId'
+             ]) &&
              isValidId(data.id) &&
              data.participantIds is list &&
              data.participantIds.size() == 2 &&
-             data.participantIds[0] is string &&
-             data.participantIds[0].size() <= 128 &&
-             data.participantIds[1] is string &&
-             data.participantIds[1].size() <= 128 &&
+             isValidId(data.participantIds[0]) &&
+             isValidId(data.participantIds[1]) &&
              data.participantIds[0] != data.participantIds[1] &&
+             (!('participantNames' in data) || (data.participantNames is map && data.participantNames.keys().hasOnly(data.participantIds) && data.participantNames.keys().hasAll(data.participantIds) && data.participantNames[data.participantIds[0]] is string && data.participantNames[data.participantIds[0]].size() <= 60 && data.participantNames[data.participantIds[1]] is string && data.participantNames[data.participantIds[1]].size() <= 60)) &&
+             (!('createdAt' in data) || isValidTimestampString(data.createdAt)) &&
              (!('lastMessageText' in data) || (data.lastMessageText is string && data.lastMessageText.size() <= 500)) &&
-             (!('lastMessageAt' in data) || data.lastMessageAt is timestamp) &&
+             (!('lastMessageAt' in data) || isValidTimestampString(data.lastMessageAt)) &&
              (!('lastSenderId' in data) ||
                (data.lastSenderId is string && data.lastSenderId in data.participantIds));
     }
 
     function isValidChatMessage(data) {
       return data.keys().hasAll(['id', 'conversationId', 'senderId', 'text']) &&
+             data.keys().hasOnly(['id', 'conversationId', 'senderId', 'senderName', 'text', 'createdAt']) &&
              isValidId(data.id) &&
              data.conversationId is string && data.conversationId.size() <= 128 &&
              data.senderId is string && data.senderId.size() <= 128 &&
              data.text is string && data.text.size() > 0 && data.text.size() <= 1000 &&
-             (!('senderName' in data) || (data.senderName is string && data.senderName.size() <= 60));
+             (!('senderName' in data) || (data.senderName is string && data.senderName.size() <= 60)) &&
+             (!('createdAt' in data) || isValidTimestampString(data.createdAt));
     }
 
     function isValidNotification(data) {
       return data.keys().hasAll(['id', 'userId', 'senderId', 'type', 'title', 'message', 'read']) &&
+             data.keys().hasOnly([
+               'id', 'userId', 'senderId', 'type', 'title', 'message', 'read',
+               'linkUrl', 'resourceId', 'eventId', 'createdAt'
+             ]) &&
              isValidId(data.id) &&
              data.userId is string && data.userId.size() <= 128 &&
              data.senderId is string && data.senderId.size() <= 128 &&
              data.type in ['partner_request', 'partner_accepted', 'new_message', 'slot_reminder', 'gym_alert'] &&
              data.title is string && data.title.size() <= 120 &&
              data.message is string && data.message.size() <= 300 &&
-             data.read is bool;
+             data.read is bool &&
+             (!('linkUrl' in data) || (data.linkUrl is string && data.linkUrl.size() <= 500 && data.linkUrl.matches('^/([a-zA-Z0-9_?=&-][a-zA-Z0-9_/?=&-]*)?$'))) &&
+             (!('resourceId' in data) || isValidId(data.resourceId)) &&
+             (!('eventId' in data) || isValidId(data.eventId)) &&
+             (!('createdAt' in data) || isValidTimestampString(data.createdAt));
+    }
+
+    function isValidPartnerRequest(data) {
+      return data.keys().hasAll(['senderId', 'receiverId', 'status']) &&
+             data.keys().hasOnly([
+               'id', 'senderId', 'receiverId', 'senderName', 'receiverName',
+               'proposedDate', 'note', 'status', 'isIncoming', 'createdAt', 'updatedAt'
+             ]) &&
+             data.senderId is string && data.senderId.size() > 0 && data.senderId.size() <= 128 &&
+             data.receiverId is string && data.receiverId.size() > 0 && data.receiverId.size() <= 128 &&
+             data.senderId != data.receiverId &&
+             data.status in ['pending', 'accepted', 'declined', 'cancelled'] &&
+             (!('id' in data) || isValidId(data.id)) &&
+             (!('senderName' in data) || (data.senderName is string && data.senderName.size() <= 60)) &&
+             (!('receiverName' in data) || (data.receiverName is string && data.receiverName.size() <= 60)) &&
+             (!('proposedDate' in data) || data.proposedDate == null || isValidTimestampString(data.proposedDate)) &&
+             (!('note' in data) || (data.note is string && data.note.size() <= 200)) &&
+             (!('isIncoming' in data) || data.isIncoming is bool) &&
+             (!('createdAt' in data) || isValidTimestampString(data.createdAt)) &&
+             (!('updatedAt' in data) || isValidTimestampString(data.updatedAt));
     }
 
     // Community Profiles
     match /community_profiles/{profileId} {
+      // Validate stored documents too, so legacy/Admin-created records cannot leak extra fields.
       allow get: if isVerifiedDhbwUser() &&
                     isValidId(profileId) &&
+                    isValidCommunityProfile(existing()) &&
+                    profileId == existing().userId &&
                     (existing().userId == request.auth.uid || existing().isPublicPresence == true);
-      allow list: if isVerifiedDhbwUser() &&
-                     (resource.data.userId == request.auth.uid || resource.data.isPublicPresence == true);
+      // The authenticated API returns a safe DTO; Firestore rules cannot redact fields in list results.
+      allow list: if false;
       allow create: if isVerifiedDhbwUser() &&
                        isValidId(profileId) &&
                        profileId == request.auth.uid &&
@@ -120,9 +190,12 @@ service cloud.firestore {
     match /partner_requests/{requestId} {
       allow get: if isVerifiedDhbwUser() &&
                     isValidId(requestId) &&
+                    isValidPartnerRequest(resource.data) &&
+                    (!('id' in resource.data) || resource.data.id == requestId) &&
                     (resource.data.senderId == request.auth.uid || resource.data.receiverId == request.auth.uid);
-      allow list: if isVerifiedDhbwUser() &&
-                     (resource.data.senderId == request.auth.uid || resource.data.receiverId == request.auth.uid);
+      // Firestore cannot redact unexpected fields from query results. The authenticated
+      // API is the supported listing path and returns participant-scoped DTOs.
+      allow list: if false;
     }
 
     // Direct Chat Conversations
@@ -130,14 +203,17 @@ service cloud.firestore {
       allow get: if isVerifiedDhbwUser() &&
                     isValidId(conversationId) &&
                     isValidConversation(resource.data) &&
+                    resource.data.id == conversationId &&
                     request.auth.uid in resource.data.participantIds;
-      allow list: if isVerifiedDhbwUser() &&
-                     request.auth.uid in resource.data.participantIds;
+      // Lists go through the authenticated API, which validates and allowlists every document.
+      allow list: if false;
       allow update: if isVerifiedDhbwUser() &&
                        isValidId(conversationId) &&
                        isValidConversation(existing()) &&
+                       existing().id == conversationId &&
                        request.auth.uid in existing().participantIds &&
                        isValidConversation(incoming()) &&
+                       incoming().id == conversationId &&
                        incoming().diff(existing()).affectedKeys().hasOnly(['lastMessageText', 'lastMessageAt', 'lastSenderId']) &&
                        incoming().lastSenderId == request.auth.uid;
 
@@ -146,42 +222,61 @@ service cloud.firestore {
         allow get: if isVerifiedDhbwUser() &&
                       isValidId(conversationId) &&
                       isValidId(messageId) &&
+                      isValidChatMessage(resource.data) &&
+                      resource.data.id == messageId &&
+                      resource.data.conversationId == conversationId &&
                       exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
+                      isValidConversation(get(/databases/$(database)/documents/conversations/$(conversationId)).data) &&
+                      get(/databases/$(database)/documents/conversations/$(conversationId)).data.id == conversationId &&
                       request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
-        allow list: if isVerifiedDhbwUser() &&
-                       isValidId(conversationId) &&
-                       exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
-                       request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
+        // The API verifies parent-conversation participation and validates every message.
+        allow list: if false;
         allow create: if isVerifiedDhbwUser() &&
                          isValidId(messageId) &&
                          incoming().senderId == request.auth.uid &&
                          incoming().conversationId == conversationId &&
                          isValidChatMessage(incoming()) &&
+                         incoming().id == messageId &&
                          exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
+                         isValidConversation(get(/databases/$(database)/documents/conversations/$(conversationId)).data) &&
+                         get(/databases/$(database)/documents/conversations/$(conversationId)).data.id == conversationId &&
                          request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
         allow delete: if isVerifiedDhbwUser() &&
                          isValidId(messageId) &&
                          existing().senderId == request.auth.uid &&
+                         existing().id == messageId &&
+                         existing().conversationId == conversationId &&
                          exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
+                         isValidConversation(get(/databases/$(database)/documents/conversations/$(conversationId)).data) &&
+                         get(/databases/$(database)/documents/conversations/$(conversationId)).data.id == conversationId &&
                          request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
       }
     }
 
     // User Private Notifications & Slot Reminders
     match /users/{userId}/notifications/{notificationId} {
-      allow get: if isVerifiedDhbwUser() && isValidId(userId) && isValidId(notificationId) && userId == request.auth.uid;
-      allow list: if isVerifiedDhbwUser() && isValidId(userId) && userId == request.auth.uid;
+      allow get: if isVerifiedDhbwUser() &&
+                    isValidId(userId) &&
+                    isValidId(notificationId) &&
+                    isValidNotification(resource.data) &&
+                    resource.data.id == notificationId &&
+                    userId == request.auth.uid;
+      // The API validates notification schemas before returning any list result.
+      allow list: if false;
       allow delete: if isVerifiedDhbwUser() && isValidId(userId) && isValidId(notificationId) && userId == request.auth.uid;
       allow update: if isVerifiedDhbwUser() &&
                        isValidId(userId) &&
                        isValidId(notificationId) &&
                        userId == request.auth.uid &&
+                       existing().id == notificationId &&
+                       incoming().id == notificationId &&
                        incoming().diff(existing()).affectedKeys().hasOnly(['read']) &&
                        incoming().read is bool;
       allow create: if isVerifiedDhbwUser() &&
                        isValidId(userId) &&
                        isValidId(notificationId) &&
                        isValidNotification(incoming()) &&
+                       incoming().id == notificationId &&
                        canCreateNotification(userId, incoming());
     }
   }
