@@ -148,6 +148,7 @@ service cloud.firestore {
                     isValidConversation(resource.data) &&
                     request.auth.uid in resource.data.participantIds;
       allow list: if isVerifiedDhbwUser() &&
+                     isValidConversation(resource.data) &&
                      request.auth.uid in resource.data.participantIds;
       allow update: if isVerifiedDhbwUser() &&
                        isValidId(conversationId) &&
@@ -162,10 +163,12 @@ service cloud.firestore {
         allow get: if isVerifiedDhbwUser() &&
                       isValidId(conversationId) &&
                       isValidId(messageId) &&
+                      isValidChatMessage(resource.data) &&
                       exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
                       request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
         allow list: if isVerifiedDhbwUser() &&
                        isValidId(conversationId) &&
+                       isValidChatMessage(resource.data) &&
                        exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
                        request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
         allow create: if isVerifiedDhbwUser() &&
@@ -185,8 +188,15 @@ service cloud.firestore {
 
     // User Private Notifications & Slot Reminders
     match /users/{userId}/notifications/{notificationId} {
-      allow get: if isVerifiedDhbwUser() && isValidId(userId) && isValidId(notificationId) && userId == request.auth.uid;
-      allow list: if isVerifiedDhbwUser() && isValidId(userId) && userId == request.auth.uid;
+      allow get: if isVerifiedDhbwUser() &&
+                    isValidId(userId) &&
+                    isValidId(notificationId) &&
+                    isValidNotification(resource.data) &&
+                    userId == request.auth.uid;
+      allow list: if isVerifiedDhbwUser() &&
+                     isValidId(userId) &&
+                     isValidNotification(resource.data) &&
+                     userId == request.auth.uid;
       allow delete: if isVerifiedDhbwUser() && isValidId(userId) && isValidId(notificationId) && userId == request.auth.uid;
       allow update: if isVerifiedDhbwUser() &&
                        isValidId(userId) &&
