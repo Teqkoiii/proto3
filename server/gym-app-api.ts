@@ -161,7 +161,6 @@ export function createGymAppApi(database: DatabaseSync, options: GymApiOptions =
   occupancySamplingTimer.unref();
 
   const app = express();
-  app.set('trust proxy', true);
   app.disable('x-powered-by');
   app.use(express.json({ limit: '12kb', type: 'application/json' }));
   app.use((_request, response, next) => {
