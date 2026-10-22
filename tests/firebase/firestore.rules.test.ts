@@ -246,6 +246,10 @@ test('conversations and chat messages are limited to conversation participants',
     });
   });
   await assertFails(getDoc(doc(bobDb, 'conversations/conversation-with-private-name')));
+  await assertFails(getDocs(query(
+    collection(bobDb, 'conversations'),
+    where('participantIds', 'array-contains', bob.uid),
+  )));
   await assertFails(getDocs(collection(charlieDb, 'conversations')));
   await assertSucceeds(getDoc(messageRef));
   await assertSucceeds(getDoc(doc(bobDb, 'conversations/conversation-one/messages/message-one')));
@@ -261,6 +265,7 @@ test('conversations and chat messages are limited to conversation participants',
     });
   });
   await assertFails(getDoc(doc(bobDb, 'conversations/conversation-one/messages/legacy-extra-field')));
+  await assertFails(getDocs(collection(bobDb, 'conversations/conversation-one/messages')));
   await assertFails(getDocs(collection(charlieDb, 'conversations/conversation-one/messages')));
   await assertFails(updateDoc(doc(charlieDb, 'conversations/conversation-one'), { lastMessageText: 'Spoofed' }));
   await assertFails(updateDoc(doc(bobDb, 'conversations/conversation-one'), { participantIds: [bob.uid] }));
