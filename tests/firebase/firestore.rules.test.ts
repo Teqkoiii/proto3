@@ -257,6 +257,7 @@ test('conversations and chat messages are limited to conversation participants',
   await assertSucceeds(updateDoc(doc(bobDb, 'conversations/conversation-one'), {
     lastMessageText: 'Reply',
     lastSenderId: bob.uid,
+    lastMessageAt: '2026-10-22T08:00:00.000Z',
   }));
   await assertFails(updateDoc(doc(bobDb, 'conversations/conversation-one'), {
     lastMessageText: 'Spoofed sender',
