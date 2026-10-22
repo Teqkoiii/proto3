@@ -278,6 +278,11 @@ test('conversations and chat messages are limited to conversation participants',
     lastMessageAt: 123456,
   }));
   await assertFails(updateDoc(doc(bobDb, 'conversations/conversation-one'), {
+    lastMessageText: 'Malformed timestamp string',
+    lastSenderId: bob.uid,
+    lastMessageAt: 'tomorrow at noon',
+  }));
+  await assertFails(updateDoc(doc(bobDb, 'conversations/conversation-one'), {
     lastMessageText: 'Invalid sender metadata',
     lastSenderId: 'charlie',
   }));
