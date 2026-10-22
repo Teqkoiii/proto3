@@ -110,7 +110,7 @@ test('Firestore access requires a verified DHBW email and rejects lookalike doma
   }
 });
 
-test('community profiles keep private profiles owner-only and allow only explicitly public reads', async () => {
+test('community profiles keep private data owner-only and deny raw collection listing', async () => {
   await resetFirestore();
   await environment.withSecurityRulesDisabled(async (context) => {
     const db = context.firestore();
@@ -123,7 +123,7 @@ test('community profiles keep private profiles owner-only and allow only explici
   await assertSucceeds(getDoc(doc(aliceDb, 'community_profiles/alice')));
   await assertFails(getDoc(doc(bobDb, 'community_profiles/alice')));
   await assertSucceeds(getDoc(doc(bobDb, 'community_profiles/alice-public')));
-  await assertSucceeds(getDocs(query(
+  await assertFails(getDocs(query(
     collection(bobDb, 'community_profiles'),
     where('isPublicPresence', '==', true),
   )));
