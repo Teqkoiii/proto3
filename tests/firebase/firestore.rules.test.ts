@@ -224,6 +224,18 @@ test('conversations and chat messages are limited to conversation participants',
     });
   });
   await assertFails(getDoc(doc(bobDb, 'conversations/conversation-with-extra-field')));
+  await environment.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), 'conversations/conversation-with-private-name'), {
+      id: 'conversation-with-private-name',
+      participantIds: [alice.uid, bob.uid],
+      participantNames: {
+        alice: 'Alice',
+        bob: 'Bob',
+        privateEmail: 'private@example.com',
+      },
+    });
+  });
+  await assertFails(getDoc(doc(bobDb, 'conversations/conversation-with-private-name')));
   await assertFails(getDocs(query(
     collection(bobDb, 'conversations'),
     where('participantIds', 'array-contains', bob.uid),
