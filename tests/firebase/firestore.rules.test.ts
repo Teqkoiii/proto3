@@ -128,6 +128,20 @@ test('community profiles keep private profiles owner-only and allow only explici
     where('isPublicPresence', '==', true),
   )));
   await assertFails(getDocs(collection(bobDb, 'community_profiles')));
+
+  // Simulate a legacy/Admin-created document that bypassed write rules.
+  // Public reads must still reject it rather than expose unexpected fields.
+  await environment.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), 'community_profiles/legacy-with-private-field'), {
+      ...profile('legacy-with-private-field', true),
+      email: 'private@example.com',
+    });
+  });
+  await assertFails(getDoc(doc(bobDb, 'community_profiles/legacy-with-private-field')));
+  await assertFails(getDocs(query(
+    collection(bobDb, 'community_profiles'),
+    where('isPublicPresence', '==', true),
+  )));
   await assertSucceeds(updateDoc(doc(aliceDb, 'community_profiles/alice'), { firstName: 'Alice updated' }));
   await assertFails(updateDoc(doc(bobDb, 'community_profiles/alice'), { firstName: 'Takeover' }));
   await assertFails(deleteDoc(doc(bobDb, 'community_profiles/alice')));
