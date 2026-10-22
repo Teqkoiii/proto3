@@ -234,6 +234,16 @@ test('conversations and chat messages are limited to conversation participants',
       senderName: 'Alice',
       text: 'Hello',
     });
+    await setDoc(doc(db, 'conversations/path-id-mismatch'), {
+      id: 'different-id',
+      participantIds: [alice.uid, bob.uid],
+    });
+    await setDoc(doc(db, 'conversations/conversation-one/messages/path-id-mismatch'), {
+      id: 'different-message-id',
+      conversationId: 'conversation-one',
+      senderId: alice.uid,
+      text: 'Malformed legacy message',
+    });
   });
 
   const aliceDb = signedIn(alice);
@@ -243,6 +253,8 @@ test('conversations and chat messages are limited to conversation participants',
   const messageRef = doc(aliceDb, 'conversations/conversation-one/messages/message-one');
   await assertSucceeds(getDoc(conversationRef));
   await assertSucceeds(getDoc(doc(bobDb, 'conversations/conversation-one')));
+  await assertFails(getDoc(doc(aliceDb, 'conversations/path-id-mismatch')));
+  await assertFails(getDoc(doc(aliceDb, 'conversations/conversation-one/messages/path-id-mismatch')));
   await assertFails(getDoc(doc(bobDb, 'conversations/conversation-with-extra-field')));
   await assertFails(getDoc(doc(charlieDb, 'conversations/conversation-one')));
   await assertFails(getDocs(query(
