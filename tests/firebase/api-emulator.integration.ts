@@ -135,6 +135,14 @@ test('verified emulator users receive server-authorized partner request notifica
     text: 'Validated server-side message',
     createdAt: new Date().toISOString(),
   });
+  await firestore.collection('conversations').doc(conversationId).collection('messages').doc('unsafe_message').set({
+    id: 'unsafe_message',
+    conversationId,
+    senderId: alice.uid,
+    senderName: 'Emulator Alice',
+    text: 'This malformed message must be omitted',
+    privateEmail: 'must-not-leak@example.com',
+  });
   await firestore.collection('conversations').doc('unsafe_conversation').set({
     id: 'unsafe_conversation',
     participantIds: [alice.uid, bob.uid],
