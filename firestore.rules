@@ -50,6 +50,10 @@ service cloud.firestore {
 
     function isValidCommunityProfile(data) {
       return data.keys().hasAll(['userId', 'firstName']) &&
+             data.keys().hasOnly([
+               'userId', 'firstName', 'lastNameInitial', 'courseOfStudy', 'bio',
+               'isPublicPresence', 'trainingGoals', 'preferredTimes', 'interests', 'updatedAt'
+             ]) &&
              data.userId is string && data.userId.size() <= 128 &&
              data.firstName is string && data.firstName.size() <= 50 &&
              (!('lastNameInitial' in data) || (data.lastNameInitial is string && data.lastNameInitial.size() <= 5)) &&
@@ -57,7 +61,9 @@ service cloud.firestore {
              (!('bio' in data) || (data.bio is string && data.bio.size() <= 300)) &&
              (!('isPublicPresence' in data) || data.isPublicPresence is bool) &&
              (!('trainingGoals' in data) || (data.trainingGoals is list && data.trainingGoals.size() <= 10)) &&
-             (!('preferredTimes' in data) || (data.preferredTimes is list && data.preferredTimes.size() <= 10));
+             (!('preferredTimes' in data) || (data.preferredTimes is list && data.preferredTimes.size() <= 10)) &&
+             (!('interests' in data) || (data.interests is list && data.interests.size() <= 10)) &&
+             (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 40));
     }
 
     function isValidConversation(data) {
@@ -114,11 +120,13 @@ service cloud.firestore {
 
     // Community Profiles
     match /community_profiles/{profileId} {
+      // Validate stored documents too, so legacy/Admin-created records cannot leak extra fields.
       allow get: if isVerifiedDhbwUser() &&
                     isValidId(profileId) &&
+                    isValidCommunityProfile(existing()) &&
                     (existing().userId == request.auth.uid || existing().isPublicPresence == true);
-      allow list: if isVerifiedDhbwUser() &&
-                     (resource.data.userId == request.auth.uid || resource.data.isPublicPresence == true);
+      // The authenticated API returns a safe DTO; Firestore rules cannot redact fields in list results.
+      allow list: if false;
       allow create: if isVerifiedDhbwUser() &&
                        isValidId(profileId) &&
                        profileId == request.auth.uid &&
