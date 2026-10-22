@@ -193,7 +193,12 @@ function startCommunityApiPolling<T>(
         onUpdate((payload as Record<string, unknown>)[resultKey] as T[]);
       }
     } catch (error) {
-      if (active) handleFirestoreError(error, OperationType.LIST, firestorePath);
+      if (active) {
+        console.error('[Community API]', {
+          path: firestorePath,
+          error: error instanceof Error ? error.message : 'unknown error',
+        });
+      }
     } finally {
       requestInFlight = false;
       if (active && auth.currentUser?.uid === firebaseUid) {
