@@ -195,11 +195,9 @@ service cloud.firestore {
                     isValidPartnerRequest(resource.data) &&
                     (!('id' in resource.data) || resource.data.id == requestId) &&
                     (resource.data.senderId == request.auth.uid || resource.data.receiverId == request.auth.uid);
-      allow list: if isVerifiedDhbwUser() &&
-                     isValidId(requestId) &&
-                     isValidPartnerRequest(resource.data) &&
-                     (!('id' in resource.data) || resource.data.id == requestId) &&
-                     (resource.data.senderId == request.auth.uid || resource.data.receiverId == request.auth.uid);
+      // Firestore cannot redact unexpected fields from query results. The authenticated
+      // API is the supported listing path and returns participant-scoped DTOs.
+      allow list: if false;
     }
 
     // Direct Chat Conversations
