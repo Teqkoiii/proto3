@@ -345,6 +345,37 @@ export function createGymAppApi(database: DatabaseSync, options: GymApiOptions =
     });
   }));
 
+  app.get('/api/gym/community/conversations', requireSession, asyncRoute(async (request, response) => {
+    if (!options.communityConversationReader) {
+      throw new GymDomainError('community chat is unavailable', 503);
+    }
+    const conversations = await options.communityConversationReader(request.firebaseIdentity!.uid);
+    response.json({ conversations });
+  }));
+
+  app.get('/api/gym/community/conversations/:conversationId/messages', requireSession, asyncRoute(async (request, response) => {
+    if (!options.communityMessageReader) {
+      throw new GymDomainError('community chat is unavailable', 503);
+    }
+    const conversationId = request.params.conversationId ?? '';
+    if (!/^[a-zA-Z0-9_-]{1,128}$/.test(conversationId)) {
+      throw new GymDomainError('conversation not found', 404);
+    }
+    const messages = await options.communityMessageReader(request.firebaseIdentity!.uid, conversationId);
+    if (messages === null) {
+      throw new GymDomainError('conversation not found', 404);
+    }
+    response.json({ messages });
+  }));
+
+  app.get('/api/gym/community/notifications', requireSession, asyncRoute(async (request, response) => {
+    if (!options.communityNotificationReader) {
+      throw new GymDomainError('community notifications are unavailable', 503);
+    }
+    const notifications = await options.communityNotificationReader(request.firebaseIdentity!.uid);
+    response.json({ notifications });
+  }));
+
   app.get('/api/gym/community/partner-requests', requireSession, (request: GymSessionRequest, response) => {
     response.json({ requests: service.listPartnerRequests(request.principalId!) });
   });
