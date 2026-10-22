@@ -67,7 +67,6 @@ mkdirSync(dirname(databasePath), { recursive: true });
 const database = new DatabaseSync(databasePath);
 
 const app = express();
-app.set('trust proxy', true);
 
 const gymApi = createGymAppApi(database, {
   secureCookies: isProduction,
