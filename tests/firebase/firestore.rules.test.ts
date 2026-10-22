@@ -133,6 +133,11 @@ test('community profiles keep private profiles owner-only and allow only explici
   await assertFails(deleteDoc(doc(bobDb, 'community_profiles/alice')));
   await assertFails(setDoc(doc(bobDb, 'community_profiles/alice-copy'), profile('alice', true)));
   await assertSucceeds(setDoc(doc(bobDb, 'community_profiles/bob'), profile('bob', true)));
+  await assertFails(updateDoc(doc(bobDb, 'community_profiles/bob'), { email: 'private@example.com' }));
+  await assertFails(setDoc(doc(bobDb, 'community_profiles/bob-with-private-field'), {
+    ...profile('bob', true),
+    email: 'private@example.com',
+  }));
   await assertFails(setDoc(doc(bobDb, 'community_profiles/alice-takeover'), profile('alice', true)));
   await assertSucceeds(deleteDoc(doc(aliceDb, 'community_profiles/alice')));
 });
@@ -225,6 +230,7 @@ test('conversations and chat messages are limited to conversation participants',
   await assertFails(updateDoc(doc(bobDb, 'conversations/conversation-one'), { participantIds: [bob.uid] }));
   await assertSucceeds(updateDoc(doc(bobDb, 'conversations/conversation-one'), {
     lastMessageText: 'Reply',
+    lastMessageAt: '2026-10-22T12:00:00.000Z',
     lastSenderId: bob.uid,
   }));
   await assertFails(updateDoc(doc(bobDb, 'conversations/conversation-one'), {
@@ -234,7 +240,7 @@ test('conversations and chat messages are limited to conversation participants',
   await assertFails(updateDoc(doc(bobDb, 'conversations/conversation-one'), {
     lastMessageText: 'Malformed timestamp',
     lastSenderId: bob.uid,
-    lastMessageAt: 'not-a-timestamp',
+    lastMessageAt: 123456,
   }));
   await assertFails(updateDoc(doc(bobDb, 'conversations/conversation-one'), {
     lastMessageText: 'Invalid sender metadata',
