@@ -110,17 +110,19 @@ function toSafeConversation(
       !value.participantIds.every(isValidId) ||
       value.participantIds[0] === value.participantIds[1] ||
       !value.participantIds.includes(requestedUid)) return null;
+  const participantIds = value.participantIds as string[];
 
   let participantNames: Record<string, string> = {};
   if ('participantNames' in value) {
-    if (!isRecord(value.participantNames)) return null;
-    const nameKeys = Object.keys(value.participantNames);
-    if (nameKeys.length !== 2 || !value.participantIds.every((uid) => nameKeys.includes(uid)) ||
-        !nameKeys.every((uid) => value.participantIds.includes(uid) &&
-          isBoundedString(value.participantNames?.[uid], 60))) return null;
+    const nameMap = value.participantNames;
+    if (!isRecord(nameMap)) return null;
+    const nameKeys = Object.keys(nameMap);
+    if (nameKeys.length !== 2 || !participantIds.every((uid) => nameKeys.includes(uid)) ||
+        !nameKeys.every((uid) => participantIds.includes(uid) &&
+          isBoundedString(nameMap[uid], 60))) return null;
     participantNames = {
-      [value.participantIds[0] as string]: value.participantNames[value.participantIds[0] as string] as string,
-      [value.participantIds[1] as string]: value.participantNames[value.participantIds[1] as string] as string,
+      [participantIds[0] as string]: nameMap[participantIds[0] as string] as string,
+      [participantIds[1] as string]: nameMap[participantIds[1] as string] as string,
     };
   }
   if ('createdAt' in value && !isValidTimestamp(value.createdAt)) return null;
