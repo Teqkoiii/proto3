@@ -205,6 +205,8 @@ service cloud.firestore {
                       resource.data.id == messageId &&
                       resource.data.conversationId == conversationId &&
                       exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
+                      isValidConversation(get(/databases/$(database)/documents/conversations/$(conversationId)).data) &&
+                      get(/databases/$(database)/documents/conversations/$(conversationId)).data.id == conversationId &&
                       request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
         // The API verifies parent-conversation participation and validates every message.
         allow list: if false;
@@ -215,6 +217,8 @@ service cloud.firestore {
                          isValidChatMessage(incoming()) &&
                          incoming().id == messageId &&
                          exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
+                         isValidConversation(get(/databases/$(database)/documents/conversations/$(conversationId)).data) &&
+                         get(/databases/$(database)/documents/conversations/$(conversationId)).data.id == conversationId &&
                          request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
         allow delete: if isVerifiedDhbwUser() &&
                          isValidId(messageId) &&
@@ -222,6 +226,8 @@ service cloud.firestore {
                          existing().id == messageId &&
                          existing().conversationId == conversationId &&
                          exists(/databases/$(database)/documents/conversations/$(conversationId)) &&
+                         isValidConversation(get(/databases/$(database)/documents/conversations/$(conversationId)).data) &&
+                         get(/databases/$(database)/documents/conversations/$(conversationId)).data.id == conversationId &&
                          request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participantIds;
       }
     }
