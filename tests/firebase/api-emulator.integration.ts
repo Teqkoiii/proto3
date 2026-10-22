@@ -35,7 +35,21 @@ test('verified emulator users receive server-authorized partner request notifica
   connectAuthEmulator(auth, `http://${authEmulatorHost}`, { disableWarnings: true });
   const database = new DatabaseSync(':memory:');
   const server = createServer(createGymAppApi(database, {
-    partnerNotificationWriter: writePartnerNotification,
+    partnerNotificationWriter: async (notification) => {
+      try {
+        await writePartnerNotification(notification);
+      } catch (error) {
+        // Keep emulator-only diagnostics useful without logging notification payloads.
+        console.error('[API emulator test] notification write error', {
+          name: error instanceof Error ? error.name : 'unknown',
+          code: typeof error === 'object' && error !== null && 'code' in error
+            ? String((error as { code: unknown }).code)
+            : 'unknown',
+          message: error instanceof Error ? error.message : 'unknown',
+        });
+        throw error;
+      }
+    },
     communityConversationWriter: writeCommunityConversation,
   }));
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
