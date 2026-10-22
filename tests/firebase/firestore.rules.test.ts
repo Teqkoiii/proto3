@@ -115,7 +115,7 @@ test('community profiles deny raw listing and reject extra fields on writes and 
   await environment.withSecurityRulesDisabled(async (context) => {
     const db = context.firestore();
     await setDoc(doc(db, 'community_profiles/alice'), profile('alice', false));
-    await setDoc(doc(db, 'community_profiles/alice-public'), profile('alice', true));
+    await setDoc(doc(db, 'community_profiles/alice-public'), profile('alice-public', true));
     await setDoc(doc(db, 'community_profiles/legacy-private-field'), {
       ...profile('legacy-private-field', true),
       email: 'private@example.com',
