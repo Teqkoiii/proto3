@@ -106,9 +106,10 @@ service cloud.firestore {
                     isValidId(profileId) &&
                     isValidCommunityProfile(existing()) &&
                     (existing().userId == request.auth.uid || existing().isPublicPresence == true);
-      allow list: if isVerifiedDhbwUser() &&
-                     isValidCommunityProfile(resource.data) &&
-                     (resource.data.userId == request.auth.uid || resource.data.isPublicPresence == true);
+      // Public profile discovery is served by the authenticated API, which
+      // returns an explicit safe DTO. Do not list raw Firestore documents:
+      // rules cannot filter individual fields from a returned document.
+      allow list: if false;
       allow create: if isVerifiedDhbwUser() &&
                        isValidId(profileId) &&
                        profileId == request.auth.uid &&
