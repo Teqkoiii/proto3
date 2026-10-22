@@ -73,7 +73,7 @@ service cloud.firestore {
              (!('participantNames' in data) || (data.participantNames is map && data.participantNames.keys().hasOnly(data.participantIds) && data.participantNames.keys().hasAll(data.participantIds) && data.participantNames[data.participantIds[0]] is string && data.participantNames[data.participantIds[0]].size() <= 60 && data.participantNames[data.participantIds[1]] is string && data.participantNames[data.participantIds[1]].size() <= 60)) &&
              (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 40)) &&
              (!('lastMessageText' in data) || (data.lastMessageText is string && data.lastMessageText.size() <= 500)) &&
-             (!('lastMessageAt' in data) || data.lastMessageAt is timestamp) &&
+             (!('lastMessageAt' in data) || (data.lastMessageAt is string && data.lastMessageAt.size() <= 40)) &&
              (!('lastSenderId' in data) ||
                (data.lastSenderId is string && data.lastSenderId in data.participantIds));
     }
