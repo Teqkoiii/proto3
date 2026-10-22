@@ -46,6 +46,10 @@ service cloud.firestore {
 
     function isValidCommunityProfile(data) {
       return data.keys().hasAll(['userId', 'firstName']) &&
+             data.keys().hasOnly([
+               'userId', 'firstName', 'lastNameInitial', 'courseOfStudy', 'bio',
+               'isPublicPresence', 'trainingGoals', 'preferredTimes', 'interests', 'updatedAt'
+             ]) &&
              data.userId is string && data.userId.size() <= 128 &&
              data.firstName is string && data.firstName.size() <= 50 &&
              (!('lastNameInitial' in data) || (data.lastNameInitial is string && data.lastNameInitial.size() <= 5)) &&
@@ -53,7 +57,9 @@ service cloud.firestore {
              (!('bio' in data) || (data.bio is string && data.bio.size() <= 300)) &&
              (!('isPublicPresence' in data) || data.isPublicPresence is bool) &&
              (!('trainingGoals' in data) || (data.trainingGoals is list && data.trainingGoals.size() <= 10)) &&
-             (!('preferredTimes' in data) || (data.preferredTimes is list && data.preferredTimes.size() <= 10));
+             (!('preferredTimes' in data) || (data.preferredTimes is list && data.preferredTimes.size() <= 10)) &&
+             (!('interests' in data) || (data.interests is list && data.interests.size() <= 10)) &&
+             (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 40));
     }
 
     function isValidConversation(data) {
@@ -67,7 +73,7 @@ service cloud.firestore {
              data.participantIds[1].size() <= 128 &&
              data.participantIds[0] != data.participantIds[1] &&
              (!('lastMessageText' in data) || (data.lastMessageText is string && data.lastMessageText.size() <= 500)) &&
-             (!('lastMessageAt' in data) || data.lastMessageAt is timestamp) &&
+             (!('lastMessageAt' in data) || (data.lastMessageAt is string && data.lastMessageAt.size() <= 40)) &&
              (!('lastSenderId' in data) ||
                (data.lastSenderId is string && data.lastSenderId in data.participantIds));
     }
