@@ -54,7 +54,7 @@ export async function writePartnerNotification(notification: PartnerNotification
 
 
 const ID_PATTERN = /^[a-zA-Z0-9_-]{1,128}$/;
-const TIMESTAMP_PATTERN = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?(Z|[+-][0-9]{2}:[0-9]{2})$/;
+const TIMESTAMP_PATTERN = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,9})?(Z|[+-][0-9]{2}:[0-9]{2})$/;
 const NOTIFICATION_TYPES = new Set([
   'partner_request',
   'partner_accepted',
