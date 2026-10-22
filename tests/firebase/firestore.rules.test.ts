@@ -115,7 +115,7 @@ test('community profiles keep private data owner-only and deny raw collection li
   await environment.withSecurityRulesDisabled(async (context) => {
     const db = context.firestore();
     await setDoc(doc(db, 'community_profiles/alice'), profile('alice', false));
-    await setDoc(doc(db, 'community_profiles/alice-public'), profile('alice', true));
+    await setDoc(doc(db, 'community_profiles/alice-public'), profile('alice-public', true));
   });
 
   const aliceDb = signedIn(alice);
