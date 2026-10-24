@@ -46,6 +46,7 @@ export function ChatDrawer({
   currentUserName,
   activePartner,
   conversations,
+  members,
   onSelectPartner,
   onNavigateToLogin,
 }: {
@@ -55,11 +56,18 @@ export function ChatDrawer({
   currentUserName: string;
   activePartner: CommunityMember | null;
   conversations: CloudConversation[];
+  members: CommunityMember[];
   onSelectPartner: (partner: CommunityMember | null) => void;
   onNavigateToLogin: () => void;
 }) {
   const [conversationId, setConversationId] = useState<string | null>(null);
-  const [otherParticipantUid, setOtherParticipantUid] = useState<string | undefined>();
+  const [otherParticipantUid, setOtherParticipantUid] = useState<string | string[] | undefined>();
+  const [showGroupForm, setShowGroupForm] = useState(false);
+  const [groupTitle, setGroupTitle] = useState('');
+  const [selectedGroupMemberIds, setSelectedGroupMemberIds] = useState<string[]>([]);
+  const [groupBusy, setGroupBusy] = useState(false);
+  const [groupError, setGroupError] = useState<string | null>(null);
+  const [createdGroup, setCreatedGroup] = useState<CloudConversation | null>(null);
   const [messages, setMessages] = useState<CloudChatMessage[]>([]);
   const [text, setText] = useState('');
   const [showGifInput, setShowGifInput] = useState(false);
@@ -80,6 +88,14 @@ export function ChatDrawer({
     setConversationId(null);
     setOtherParticipantUid(undefined);
     setMessages([]);
+    if (activePartner.id.startsWith('group_')) {
+      const group = [createdGroup, ...conversations].find((conversation) => conversation?.id === activePartner.id);
+      if (group) {
+        setConversationId(group.id);
+        setOtherParticipantUid(group.participantIds.filter((uid) => uid !== currentUserId));
+      }
+      return () => { active = false; };
+    }
     const existing = conversations.find((conversation) => (
       conversation.participantIds.includes(currentUserId) &&
       conversation.participantIds.includes(activePartner.id)
@@ -128,6 +144,44 @@ export function ChatDrawer({
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  const handleCreateGroup = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (groupBusy || selectedGroupMemberIds.length < 2) return;
+    setGroupBusy(true);
+    setGroupError(null);
+    try {
+      const result = await gymRepository.createCommunityGroupConversation(selectedGroupMemberIds, groupTitle.trim());
+      const group: CloudConversation = {
+        id: result.conversationId,
+        participantIds: result.participantIds,
+        participantNames: {},
+        title: groupTitle.trim() || 'Gym-Gruppe',
+        createdAt: new Date().toISOString(),
+      };
+      setCreatedGroup(group);
+      setShowGroupForm(false);
+      setSelectedGroupMemberIds([]);
+      onSelectPartner({
+        id: group.id,
+        firstName: group.title ?? 'Gym-Gruppe',
+        lastNameInitial: '',
+        courseOfStudy: `Gruppe · ${group.participantIds.length} Mitglieder`,
+        trainingGoals: [],
+        preferredTimes: [],
+        interests: [],
+        bio: '',
+        isPublicPresence: true,
+        activeNow: false,
+        plannedNext: null,
+        isSelf: false,
+      });
+    } catch (error) {
+      setGroupError(error instanceof Error ? error.message : 'Gruppe konnte nicht erstellt werden.');
+    } finally {
+      setGroupBusy(false);
+    }
+  };
 
   if (!isOpen) return null;
 
@@ -221,7 +275,33 @@ export function ChatDrawer({
         </div>
       ) : !activePartner ? (
         <div className="chat-conversations-list">
-          <p className="text-xs text-slate-400 px-4 pt-3 pb-1">
+          <div className="px-4 pt-3 pb-2">
+            <button type="button" className="button button-secondary compact-button" onClick={() => setShowGroupForm((open) => !open)}>
+              <Users size={15} /> Gruppe erstellen
+            </button>
+            {showGroupForm && (
+              <form className="stack-form mt-3" onSubmit={handleCreateGroup}>
+                <input className="text-input" value={groupTitle} maxLength={80}
+                  onChange={(event) => setGroupTitle(event.target.value)} placeholder="Gruppenname (optional)" />
+                <p className="text-xs text-slate-400">Wähle mindestens zwei weitere DHBW-Studierende aus.</p>
+                <div className="max-h-40 overflow-y-auto flex flex-col gap-2">
+                  {members.filter((member) => !member.isSelf && member.isPublicPresence).map((member) => (
+                    <label key={member.id} className="flex items-center gap-2 text-sm text-slate-200">
+                      <input type="checkbox" checked={selectedGroupMemberIds.includes(member.id)}
+                        onChange={(event) => setSelectedGroupMemberIds((current) => event.target.checked
+                          ? [...current, member.id] : current.filter((id) => id !== member.id))} />
+                      {member.firstName} {member.lastNameInitial ? `${member.lastNameInitial}.` : ''} <span className="text-xs text-slate-500">· {member.courseOfStudy}</span>
+                    </label>
+                  ))}
+                </div>
+                {groupError && <p className="text-xs text-red-400">{groupError}</p>}
+                <button type="submit" className="button button-primary" disabled={groupBusy || selectedGroupMemberIds.length < 2}>
+                  {groupBusy ? 'Gruppe wird erstellt…' : 'Gruppe erstellen'}
+                </button>
+              </form>
+            )}
+          </div>
+          <p className="text-xs text-slate-400 px-4 pt-1 pb-1">
             Wähle einen Trainingspartner aus der Community oder antworte auf bestehende Nachrichten:
           </p>
 
@@ -237,17 +317,18 @@ export function ChatDrawer({
             <ul className="chat-conv-items">
               {conversations.map((c) => {
                 const otherUid = c.participantIds.find((id) => id !== currentUserId) || '';
-                const otherName = c.participantNames?.[otherUid] || 'Trainingspartner';
+                const isGroup = c.participantIds.length > 2 || c.id.startsWith('group_');
+                const otherName = c.title || c.participantNames?.[otherUid] || 'Trainingspartner';
                 return (
                   <li
                     key={c.id}
                     className="chat-conv-row"
                     onClick={() => {
                       onSelectPartner({
-                        id: otherUid,
+                        id: isGroup ? c.id : otherUid,
                         firstName: otherName.split(' ')[0] || otherName,
-                        lastNameInitial: otherName.split(' ')[1]?.replace('.', '') || '',
-                        courseOfStudy: 'DHBW Bad Mergentheim',
+                        lastNameInitial: isGroup ? '' : otherName.split(' ')[1]?.replace('.', '') || '',
+                        courseOfStudy: isGroup ? `Gruppe · ${c.participantIds.length} Mitglieder` : 'DHBW Bad Mergentheim',
                         trainingGoals: [],
                         preferredTimes: [],
                         interests: [],
