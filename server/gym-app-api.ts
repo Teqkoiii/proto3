@@ -313,7 +313,7 @@ export function createGymAppApi(database: DatabaseSync, options: GymApiOptions =
   });
 
   app.get('/api/gym/bookings', (request, response) => {
-    response.json(service.listBookingSlots(request.query.from, request.query.to));
+    response.json(service.listBookingSlots(request.query.from, request.query.to, { cleanup: false }));
   });
 
   app.get('/api/gym/calendar/events', requireSession, (request: GymSessionRequest, response) => {
