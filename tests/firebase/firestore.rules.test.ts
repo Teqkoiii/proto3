@@ -329,7 +329,7 @@ test('conversations and chat messages are limited to conversation participants',
   const charlieDb = signedIn({ uid: 'charlie', email: 'charlie@bad-mergentheim.dhbw.de', email_verified: true });
   await assertSucceeds(getDoc(doc(charlieDb, 'conversations/group-one')));
   await assertSucceeds(getDoc(doc(bobDb, 'conversations/group-one/messages/group-message')));
-  await assertFails(getDoc(doc(aliceDb, 'conversations/group-one/messages/nonexistent')));
+  await assertFails(getDoc(doc(signedIn(outsider), 'conversations/group-one')));
   await assertFails(getDoc(doc(aliceDb, 'conversations/path-id-mismatch')));
   await assertFails(getDoc(doc(bobDb, 'conversations/conversation-invalid-participant-id')));
   // A valid child message must not bypass validation of its malformed parent.
