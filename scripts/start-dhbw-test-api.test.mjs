@@ -123,7 +123,7 @@ test('direct test-project server startup refuses before creating a database or l
 
     const result = spawnSync(process.execPath, [
       join(repositoryRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs'),
-      'server.ts',
+      join(repositoryRoot, 'server.ts'),
     ], {
       cwd: tempDirectory,
       env: environment,
