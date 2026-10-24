@@ -1,6 +1,7 @@
 name: Integration CI
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - integration/firestore-chat-security-on-current-base
