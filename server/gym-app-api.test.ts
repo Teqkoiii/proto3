@@ -419,6 +419,46 @@ test('expired legacy sessions cannot prove ownership, but the previous password 
   );
 });
 
+test('legacy profile linking rate-limits failed previous-password proofs per verified email', async (t) => {
+  const { baseUrl, database } = await startApi(t);
+  const targetEmail = 'rate-limited@dhbw.de';
+  await createLegacyProfile(database, { email: targetEmail, password: 'correct-previous-password' });
+  const otherEmail = 'unrelated-profile@dhbw.de';
+  await createLegacyProfile(database, { email: otherEmail, password: 'other-correct-password' });
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const response = await fetch(`${baseUrl}/api/gym/auth/link`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${firebaseToken('rate-limit-uid', targetEmail)}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ legacyPassword: 'incorrect-password-value' }),
+    });
+    assert.equal(response.status, 401, `failed proof ${attempt + 1} should be rejected`);
+  }
+
+  const blockedCorrectPassword = await fetch(`${baseUrl}/api/gym/auth/link`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${firebaseToken('rate-limit-uid', targetEmail)}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ legacyPassword: 'correct-previous-password' }),
+  });
+  assert.equal(blockedCorrectPassword.status, 429, 'the sixth attempt is blocked during the lockout window');
+
+  const unrelatedAccount = await fetch(`${baseUrl}/api/gym/auth/link`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${firebaseToken('unrelated-rate-limit-uid', otherEmail)}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ legacyPassword: 'other-correct-password' }),
+  });
+  assert.equal(unrelatedAccount.status, 200, 'one email lockout must not block a different verified account');
+});
+
 test('a legacy session cannot link a Firebase account with a different email', async (t) => {
   const { baseUrl, database } = await startApi(t);
   const legacy = await createLegacyProfile(database, { email: 'old-address@dhbw.de', password: 'previous-password' });
