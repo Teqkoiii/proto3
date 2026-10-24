@@ -49,6 +49,11 @@ service cloud.firestore {
     function isValidId(id) {
       return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_-]+$');
     }
+    function isValidParticipantId(value) {
+      // Firebase Auth UIDs are opaque identifiers; avoid regex evaluation for each group member.
+      return value is string && value.size() > 0 && value.size() <= 128;
+    }
+
     function isValidTimestampString(value) {
       return value is string && value.size() <= 40 &&
              value.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?(Z|[+-][0-9]{2}:[0-9]{2})$');
@@ -99,16 +104,16 @@ service cloud.firestore {
              isValidId(data.id) &&
              data.participantIds is list &&
              data.participantIds.size() >= 2 && data.participantIds.size() <= 10 &&
-             (data.participantIds.size() < 1 || isValidId(data.participantIds[0])) &&
-             (data.participantIds.size() < 2 || isValidId(data.participantIds[1])) &&
-             (data.participantIds.size() < 3 || isValidId(data.participantIds[2])) &&
-             (data.participantIds.size() < 4 || isValidId(data.participantIds[3])) &&
-             (data.participantIds.size() < 5 || isValidId(data.participantIds[4])) &&
-             (data.participantIds.size() < 6 || isValidId(data.participantIds[5])) &&
-             (data.participantIds.size() < 7 || isValidId(data.participantIds[6])) &&
-             (data.participantIds.size() < 8 || isValidId(data.participantIds[7])) &&
-             (data.participantIds.size() < 9 || isValidId(data.participantIds[8])) &&
-             (data.participantIds.size() < 10 || isValidId(data.participantIds[9])) &&
+             (data.participantIds.size() < 1 || isValidParticipantId(data.participantIds[0])) &&
+             (data.participantIds.size() < 2 || isValidParticipantId(data.participantIds[1])) &&
+             (data.participantIds.size() < 3 || isValidParticipantId(data.participantIds[2])) &&
+             (data.participantIds.size() < 4 || isValidParticipantId(data.participantIds[3])) &&
+             (data.participantIds.size() < 5 || isValidParticipantId(data.participantIds[4])) &&
+             (data.participantIds.size() < 6 || isValidParticipantId(data.participantIds[5])) &&
+             (data.participantIds.size() < 7 || isValidParticipantId(data.participantIds[6])) &&
+             (data.participantIds.size() < 8 || isValidParticipantId(data.participantIds[7])) &&
+             (data.participantIds.size() < 9 || isValidParticipantId(data.participantIds[8])) &&
+             (data.participantIds.size() < 10 || isValidParticipantId(data.participantIds[9])) &&
              (data.participantIds.size() < 2 || data.participantIds[0] != data.participantIds[1]) &&
              (data.participantIds.size() < 3 || data.participantIds[0] != data.participantIds[2]) &&
              (data.participantIds.size() < 4 || data.participantIds[0] != data.participantIds[3]) &&
