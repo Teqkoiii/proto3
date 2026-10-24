@@ -512,6 +512,8 @@ export class GymAppService {
       throw new GymDomainError('participantPrincipalIds is required', 400);
     }
     const requestedIds = input.participantPrincipalIds;
+    const title = typeof input.title === 'string' ? input.title.trim() : '';
+    if (title.length > 80) throw new GymDomainError('group name must be at most 80 characters', 400);
     if (requestedIds.length < 2 || requestedIds.length > 9 ||
         !requestedIds.every((id) => typeof id === 'string' && id.trim().length > 0) ||
         new Set(requestedIds).size !== requestedIds.length ||
@@ -540,6 +542,7 @@ export class GymAppService {
       participantIds,
       participantNames,
       createdAt: new Date(this.now()).toISOString(),
+      title: title || 'Gym-Gruppe',
     };
   }
 
