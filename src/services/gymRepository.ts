@@ -130,6 +130,13 @@ export interface CommunityMember {
   isSelf: boolean;
 }
 
+export interface CommunityGifResult {
+  id: string;
+  title: string;
+  url: string;
+  previewUrl: string;
+}
+
 export interface TrainingPartnerRequest {
   id: string;
   senderId: string;
@@ -154,6 +161,7 @@ export interface GymRepository {
   getCommunityProfile(): Promise<CommunityProfile>;
   updateCommunityProfile(input: Partial<CommunityProfile>): Promise<CommunityProfile>;
   getCommunityMembers(): Promise<CommunityMember[]>;
+  searchCommunityGifs(query: string): Promise<CommunityGifResult[]>;
   createCommunityConversation(partnerPrincipalId: string): Promise<{
     conversationId: string;
     otherParticipantUid: string;
@@ -300,6 +308,10 @@ export function createGymRepository(
     async getCommunityMembers() {
       const result = await request<{ members: CommunityMember[] }>('/api/gym/community/members');
       return result.members;
+    },
+    async searchCommunityGifs(query) {
+      const result = await request<{ gifs: CommunityGifResult[] }>(`/api/gym/community/gifs?q=${encodeURIComponent(query.trim().slice(0, 80))}`);
+      return result.gifs;
     },
     createCommunityConversation(partnerPrincipalId) {
       return request('/api/gym/community/conversations', {

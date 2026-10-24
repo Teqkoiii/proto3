@@ -298,7 +298,7 @@ export function createGymAppApi(database: DatabaseSync, options: GymApiOptions =
     response.status(204).end();
   });
 
-  app.get('/api/gym/occupancy', (request, response) => response.json(service.getOccupancy(request.query.range)));
+  app.get('/api/gym/occupancy', (request, response) => response.json(service.getOccupancy(request.query.range, { cleanup: false, recordSample: false })));
 
   app.post('/api/gym/check-in', requireSession, (request: GymSessionRequest, response) => {
     response.json(service.checkIn(request.principalId!));
@@ -313,7 +313,7 @@ export function createGymAppApi(database: DatabaseSync, options: GymApiOptions =
   });
 
   app.get('/api/gym/bookings', (request, response) => {
-    response.json(service.listBookingSlots(request.query.from, request.query.to));
+    response.json(service.listBookingSlots(request.query.from, request.query.to, { cleanup: false }));
   });
 
   app.get('/api/gym/calendar/events', requireSession, (request: GymSessionRequest, response) => {
@@ -331,6 +331,54 @@ export function createGymAppApi(database: DatabaseSync, options: GymApiOptions =
   app.get('/api/gym/community/members', requireSession, (request: GymSessionRequest, response) => {
     response.json({ members: service.listCommunityMembers(request.principalId!) });
   });
+
+  app.get('/api/gym/community/gifs', requireSession, asyncRoute(async (request, response) => {
+    const query = typeof request.query.q === 'string' ? request.query.q.trim().slice(0, 80) : '';
+    if (!query) {
+      response.status(400).json({ error: 'GIF search query required' });
+      return;
+    }
+    const apiKey = process.env.TENOR_API_KEY?.trim();
+    if (!apiKey) {
+      throw new GymDomainError('GIF-Suche ist noch nicht konfiguriert (TENOR_API_KEY fehlt).', 503);
+    }
+    const endpoint = new URL('https://tenor.googleapis.com/v2/search');
+    endpoint.searchParams.set('q', query);
+    endpoint.searchParams.set('key', apiKey);
+    endpoint.searchParams.set('client_key', 'dhbw_gym_app');
+    endpoint.searchParams.set('limit', '12');
+    endpoint.searchParams.set('media_filter', 'tinygif,gif');
+    endpoint.searchParams.set('contentfilter', 'medium');
+    let providerResponse: globalThis.Response;
+    try {
+      providerResponse = await fetch(endpoint, { signal: AbortSignal.timeout(8000) });
+    } catch {
+      throw new GymDomainError('GIF-Suche ist gerade nicht erreichbar. Bitte versuche es erneut.', 502);
+    }
+    if (!providerResponse.ok) {
+      console.error('[Community GIF search] Tenor request failed', { status: providerResponse.status });
+      throw new GymDomainError('GIF-Suche konnte nicht geladen werden.', 502);
+    }
+    const payload: unknown = await providerResponse.json();
+    const results = typeof payload === 'object' && payload !== null && 'results' in payload && Array.isArray(payload.results)
+      ? payload.results
+      : [];
+    const gifs = results.flatMap((item: unknown) => {
+      if (typeof item !== 'object' || item === null) return [];
+      const record = item as Record<string, unknown>;
+      const media = record.media_formats;
+      if (typeof media !== 'object' || media === null) return [];
+      const formats = media as Record<string, unknown>;
+      const gif = formats.gif;
+      const preview = formats.tinygif;
+      const getUrl = (value: unknown) => typeof value === 'object' && value !== null && 'url' in value && typeof value.url === 'string' ? value.url : undefined;
+      const url = getUrl(gif) ?? getUrl(preview);
+      const previewUrl = getUrl(preview) ?? url;
+      if (!url || !previewUrl || !url.startsWith('https://') || !previewUrl.startsWith('https://')) return [];
+      return [{ id: typeof record.id === 'string' ? record.id : url, title: typeof record.content_description === 'string' ? record.content_description.slice(0, 120) : 'GIF', url, previewUrl }];
+    });
+    response.json({ gifs });
+  }));
 
   app.post('/api/gym/community/conversations', requireSession, asyncRoute(async (request, response) => {
     if (!options.communityConversationWriter) {
