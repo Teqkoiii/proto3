@@ -158,7 +158,7 @@ export interface GymRepository {
     conversationId: string;
     otherParticipantUid: string;
   }>;
-  createCommunityGroupConversation(participantPrincipalIds: string[]): Promise<{
+  createCommunityGroupConversation(participantPrincipalIds: string[], title?: string): Promise<{
     conversationId: string;
     participantIds: string[];
   }>;
@@ -311,10 +311,10 @@ export function createGymRepository(
         body: JSON.stringify({ partnerPrincipalId }),
       });
     },
-    createCommunityGroupConversation(participantPrincipalIds) {
+    createCommunityGroupConversation(participantPrincipalIds, title) {
       return request('/api/gym/community/groups', {
         method: 'POST',
-        body: JSON.stringify({ participantPrincipalIds }),
+        body: JSON.stringify({ participantPrincipalIds, title }),
       });
     },
     async getPartnerRequests() {
