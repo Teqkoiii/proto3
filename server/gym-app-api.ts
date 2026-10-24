@@ -137,12 +137,16 @@ export function createGymAppApi(database: DatabaseSync, options: GymApiOptions =
 
   app.use((request, response, next) => {
     const origin = request.get('Origin');
-    const effectiveHost = request.get('x-forwarded-host') || request.get('host');
+    // Compare the complete origin, including scheme and host. X-Forwarded-Host
+    // is not trusted because a client may supply it when proxy stripping is unknown.
+    const effectiveHost = request.get('host')?.toLowerCase();
+    const expectedProtocol = secureCookies ? 'https:' : 'http:';
     let sameOrigin = false;
     if (origin) {
       try {
-        const originHost = new URL(origin).host;
-        sameOrigin = originHost === effectiveHost || originHost === request.get('host');
+        const parsedOrigin = new URL(origin);
+        sameOrigin = parsedOrigin.protocol === expectedProtocol &&
+          parsedOrigin.host.toLowerCase() === effectiveHost;
       } catch {
         sameOrigin = false;
       }
