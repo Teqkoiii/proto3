@@ -232,7 +232,7 @@ export function ChatDrawer({
           <div>
             <h3 className="chat-header-title">
               {activePartner
-                ? `${activePartner.firstName} ${activePartner.lastNameInitial}.`
+                ? `${activePartner.firstName}${activePartner.lastNameInitial ? ` ${activePartner.lastNameInitial}.` : ''}`
                 : 'Gym Community Chat'}
             </h3>
             <p className="chat-header-subtitle">
