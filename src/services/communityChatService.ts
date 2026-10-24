@@ -276,26 +276,35 @@ export async function sendChatMessage(
   };
 
   try {
+    // The message write is the critical path. Return as soon as it is stored so
+    // quick replies do not wait for conversation-preview and notification writes.
     await setDoc(doc(db, 'conversations', conversationId, 'messages', msgId), messageDoc);
-    await updateDoc(doc(db, 'conversations', conversationId), {
-      lastMessageText: text.trim().slice(0, 100),
-      lastMessageAt: now,
-      lastSenderId: senderId,
-    });
-
-    // Notify other participant if known
-    if (otherUserId && otherUserId !== senderId) {
-      await sendNotification(otherUserId, {
-        type: 'new_message',
-        title: `Neue Nachricht von ${senderName}`,
-        message: text.trim().slice(0, 100),
-        linkUrl: `/chat/${conversationId}`,
-        resourceId: conversationId,
-        eventId: msgId,
-      });
-    }
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, path);
+    return;
+  }
+
+  // These writes are secondary: keep the send action responsive while updating
+  // the conversation preview and delivering a notification in the background.
+  void updateDoc(doc(db, 'conversations', conversationId), {
+    lastMessageText: text.trim().slice(0, 100),
+    lastMessageAt: now,
+    lastSenderId: senderId,
+  }).catch((err: unknown) => {
+    console.error('[Community chat] Conversation preview update failed', err);
+  });
+
+  if (otherUserId && otherUserId !== senderId) {
+    void sendNotification(otherUserId, {
+      type: 'new_message',
+      title: `Neue Nachricht von ${senderName}`,
+      message: text.trim().slice(0, 100),
+      linkUrl: `/chat/${conversationId}`,
+      resourceId: conversationId,
+      eventId: msgId,
+    }).catch((err: unknown) => {
+      console.error('[Community chat] Message notification failed', err);
+    });
   }
 }
 
