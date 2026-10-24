@@ -325,7 +325,10 @@ export async function sendNotification(
 ): Promise<void> {
   const senderId = auth.currentUser?.uid;
   if (!senderId) throw new Error('Firebase user must be signed in to send a notification');
-  const notifId = `notif_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  // Message notifications use the message ID so the same message cannot create duplicate notifications.
+  const notifId = notification.type === 'new_message' && notification.eventId
+    ? notification.eventId
+    : `notif_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
   const now = new Date().toISOString();
   const path = `users/${userId}/notifications/${notifId}`;
 
