@@ -314,8 +314,63 @@ export function createGymRepository(
       return result.members;
     },
     async searchCommunityGifs(query) {
-      const result = await request<{ gifs: CommunityGifResult[] }>(`/api/gym/community/gifs?q=${encodeURIComponent(query.trim().slice(0, 80))}`);
-      return result.gifs;
+      const normalizedQuery = query.trim().slice(0, 50);
+      if (!normalizedQuery) return [];
+      const apiKey = import.meta.env?.VITE_GIPHY_API_KEY?.trim();
+      if (!apiKey) {
+        throw new GymApiError('GIF-Suche ist noch nicht konfiguriert (VITE_GIPHY_API_KEY fehlt).', 503);
+      }
+
+      const endpoint = new URL('https://api.giphy.com/v1/gifs/search');
+      endpoint.searchParams.set('api_key', apiKey);
+      endpoint.searchParams.set('q', normalizedQuery);
+      endpoint.searchParams.set('limit', '12');
+      endpoint.searchParams.set('rating', 'pg-13');
+      endpoint.searchParams.set('lang', 'de');
+
+      let response: FetchResponseLike;
+      try {
+        response = await fetcher(endpoint.toString(), { cache: 'no-store' });
+      } catch {
+        throw new GymApiError('GIF-Suche ist gerade nicht erreichbar. Bitte versuche es erneut.', 502);
+      }
+      if (!response.ok) {
+        throw new GymApiError('GIF-Suche konnte nicht geladen werden. Prüfe den GIPHY API-Key.', response.status);
+      }
+
+      let payload: unknown;
+      try {
+        payload = await response.json();
+      } catch {
+        throw new GymApiError('GIF-Suche lieferte eine ungültige Antwort.', 502);
+      }
+      const records = isRecord(payload) && Array.isArray(payload.data) ? payload.data : [];
+      return records.flatMap((item): CommunityGifResult[] => {
+        if (!isRecord(item) || typeof item.id !== 'string') return [];
+        const images = isRecord(item.images) ? item.images : {};
+        const original = isRecord(images.original) ? images.original : {};
+        const preview = isRecord(images.fixed_width_small)
+          ? images.fixed_width_small
+          : isRecord(images.preview_gif) ? images.preview_gif : original;
+        const url = typeof original.url === 'string' ? original.url : '';
+        const previewUrl = typeof preview.url === 'string' ? preview.url : url;
+        const isHttpsGiphyUrl = (value: string) => {
+          try {
+            const parsed = new URL(value);
+            return parsed.protocol === 'https:' &&
+              (parsed.hostname === 'giphy.com' || parsed.hostname.endsWith('.giphy.com'));
+          } catch {
+            return false;
+          }
+        };
+        if (!isHttpsGiphyUrl(url) || !isHttpsGiphyUrl(previewUrl)) return [];
+        return [{
+          id: item.id,
+          title: typeof item.title === 'string' && item.title.trim() ? item.title.slice(0, 120) : 'GIF',
+          url,
+          previewUrl,
+        }];
+      });
     },
     createCommunityConversation(partnerPrincipalId) {
       return request('/api/gym/community/conversations', {
