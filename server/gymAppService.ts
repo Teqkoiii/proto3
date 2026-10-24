@@ -74,7 +74,7 @@ export class GymAppService {
     now?: () => number;
   };
 
-  private checkLegacyLinkRateLimit(email: string): void {
+  private registerLegacyLinkAttempt(email: string): void {
     const timestamp = this.now();
     for (const [key, entry] of this.legacyLinkFailures) {
       if (entry.resetsAt <= timestamp) this.legacyLinkFailures.delete(key);
@@ -83,15 +83,12 @@ export class GymAppService {
     if (entry && entry.count >= 5 && entry.resetsAt > timestamp) {
       throw new GymDomainError('too many profile-link attempts; try again later', 429);
     }
-  }
-
-  private recordLegacyLinkFailure(email: string): void {
-    const timestamp = this.now();
-    const entry = this.legacyLinkFailures.get(email);
     if (!entry || entry.resetsAt <= timestamp) {
       this.legacyLinkFailures.set(email, { count: 1, resetsAt: timestamp + 15 * 60_000 });
       return;
     }
+    // Reserve the attempt before awaiting password hashing so concurrent requests
+    // cannot all pass the limit check at once.
     entry.count += 1;
   }
 
@@ -187,10 +184,9 @@ export class GymAppService {
         if (legacyPassword === undefined) {
           throw new GymDomainError('existing profile requires its previous password to link', 409);
         }
-        this.checkLegacyLinkRateLimit(email);
+        this.registerLegacyLinkAttempt(email);
         if (typeof legacyPassword !== 'string' || legacyPassword.length < 10 || legacyPassword.length > 128 ||
             !await verifyPasswordOrDummy(legacyPassword, credentials.passwordHash)) {
-          this.recordLegacyLinkFailure(email);
           throw new GymDomainError('previous account password is incorrect', 401);
         }
         this.legacyLinkFailures.delete(email);
