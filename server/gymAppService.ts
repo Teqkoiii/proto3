@@ -206,12 +206,15 @@ export class GymAppService {
     return principalId;
   }
 
-  getOccupancy(rangeValue: unknown = '24h') {
+  getOccupancy(
+    rangeValue: unknown = '24h',
+    options: { cleanup?: boolean; recordSample?: boolean } = {},
+  ) {
     const timestamp = this.now();
     const refreshedAt = new Date(timestamp).toISOString();
-    this.cleanupExpiredData();
+    if (options.cleanup !== false) this.cleanupExpiredData();
     const count = this.repository.occupancy(refreshedAt);
-    this.repository.recordOccupancySample(refreshedAt, count);
+    if (options.recordSample !== false) this.repository.recordOccupancySample(refreshedAt, count);
     const range = typeof rangeValue === 'string' && rangeValue in OCCUPANCY_RANGES ? rangeValue : '24h';
     const from = new Date(timestamp - OCCUPANCY_RANGES[range]).toISOString();
     return {
@@ -259,14 +262,14 @@ export class GymAppService {
     return { startAt: normalizedStart, endAt, ...this.repository.availability(normalizedStart, endAt) };
   }
 
-  listBookingSlots(fromValue: unknown, toValue: unknown) {
+  listBookingSlots(fromValue: unknown, toValue: unknown, options: { cleanup?: boolean } = {}) {
     const now = this.now();
     const from = isDate(fromValue) ? new Date(Date.parse(fromValue)).toISOString() : new Date(now).toISOString();
     const to = isDate(toValue) ? new Date(Date.parse(toValue)).toISOString() : new Date(now + 30 * 86400_000).toISOString();
     if (Date.parse(to) <= Date.parse(from) || Date.parse(to) - Date.parse(from) > 90 * 86400_000) {
       throw new GymDomainError('booking window must be between 0 and 90 days', 400);
     }
-    this.cleanupExpiredData();
+    if (options.cleanup !== false) this.cleanupExpiredData();
     return {
       slots: this.repository.listBookingSlots(from, to),
       capacityConfigured: false,
@@ -501,6 +504,45 @@ export class GymAppService {
       },
       createdAt: new Date(this.now()).toISOString(),
       otherParticipantUid: partnerUid,
+    };
+  }
+
+  createCommunityGroupConversation(principalId: string, input: unknown) {
+    if (!isRecord(input) || !Array.isArray(input.participantPrincipalIds)) {
+      throw new GymDomainError('participantPrincipalIds is required', 400);
+    }
+    const requestedIds = input.participantPrincipalIds;
+    const title = typeof input.title === 'string' ? input.title.trim() : '';
+    if (title.length > 80) throw new GymDomainError('group name must be at most 80 characters', 400);
+    if (requestedIds.length < 2 || requestedIds.length > 9 ||
+        !requestedIds.every((id) => typeof id === 'string' && id.trim().length > 0) ||
+        new Set(requestedIds).size !== requestedIds.length ||
+        requestedIds.includes(principalId)) {
+      throw new GymDomainError('a group needs 2 to 9 other unique members', 400);
+    }
+
+    const allPrincipalIds = [principalId, ...requestedIds as string[]];
+    const participantIds: string[] = [];
+    const participantNames: Record<string, string> = {};
+    for (const memberPrincipalId of allPrincipalIds) {
+      const profile = this.repository.getCommunityProfile(memberPrincipalId);
+      if (!profile || (memberPrincipalId !== principalId && !profile.isPublicPresence)) {
+        throw new GymDomainError('one or more community members are unavailable', 404);
+      }
+      const uid = this.repository.findFirebaseUidForPrincipal(memberPrincipalId);
+      if (!uid) throw new GymDomainError('all group members must have verified DHBW accounts', 409);
+      participantIds.push(uid);
+      participantNames[uid] = `${profile.firstName}${profile.lastNameInitial ? ` ${profile.lastNameInitial}.` : ''}`.slice(0, 60);
+    }
+
+    participantIds.sort();
+    const id = `group_${randomUUID()}`;
+    return {
+      id,
+      participantIds,
+      participantNames,
+      createdAt: new Date(this.now()).toISOString(),
+      title: title || 'Gym-Gruppe',
     };
   }
 

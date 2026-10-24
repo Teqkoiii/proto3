@@ -63,7 +63,7 @@ const NOTIFICATION_TYPES = new Set([
   'gym_alert',
 ]);
 const CONVERSATION_KEYS = new Set([
-  'id', 'participantIds', 'participantNames', 'createdAt',
+  'id', 'participantIds', 'participantNames', 'createdAt', 'title',
   'lastMessageText', 'lastMessageAt', 'lastSenderId',
 ]);
 const MESSAGE_KEYS = new Set([
@@ -106,7 +106,7 @@ function toSafeConversation(
 ): CommunityConversationDto | null {
   if (!isRecord(value) || !hasOnlyKeys(value, CONVERSATION_KEYS)) return null;
   if (value.id !== documentId || !isValidId(value.id)) return null;
-  if (!Array.isArray(value.participantIds) || value.participantIds.length !== 2 ||
+  if (!Array.isArray(value.participantIds) || value.participantIds.length < 2 || value.participantIds.length > 10 ||
       !value.participantIds.every(isValidId) ||
       value.participantIds[0] === value.participantIds[1] ||
       !value.participantIds.includes(requestedUid)) return null;
@@ -117,15 +117,13 @@ function toSafeConversation(
     const nameMap = value.participantNames;
     if (!isRecord(nameMap)) return null;
     const nameKeys = Object.keys(nameMap);
-    if (nameKeys.length !== 2 || !participantIds.every((uid) => nameKeys.includes(uid)) ||
+    if (nameKeys.length !== participantIds.length || !participantIds.every((uid) => nameKeys.includes(uid)) ||
         !nameKeys.every((uid) => participantIds.includes(uid) &&
           isBoundedString(nameMap[uid], 60))) return null;
-    participantNames = {
-      [participantIds[0] as string]: nameMap[participantIds[0] as string] as string,
-      [participantIds[1] as string]: nameMap[participantIds[1] as string] as string,
-    };
+    participantNames = Object.fromEntries(participantIds.map((uid) => [uid, nameMap[uid] as string]));
   }
   if ('createdAt' in value && !isValidTimestamp(value.createdAt)) return null;
+  if ('title' in value && !isBoundedString(value.title, 80)) return null;
   if ('lastMessageText' in value && !isBoundedString(value.lastMessageText, 500)) return null;
   if ('lastMessageAt' in value && !isValidTimestamp(value.lastMessageAt)) return null;
   if ('lastSenderId' in value &&
@@ -136,6 +134,7 @@ function toSafeConversation(
     participantIds: [...value.participantIds] as string[],
     participantNames,
     createdAt: isValidTimestamp(value.createdAt) ? value.createdAt : '',
+    ...(typeof value.title === 'string' ? { title: value.title } : {}),
     ...(typeof value.lastMessageText === 'string' ? { lastMessageText: value.lastMessageText } : {}),
     ...(typeof value.lastMessageAt === 'string' ? { lastMessageAt: value.lastMessageAt } : {}),
     ...(typeof value.lastSenderId === 'string' ? { lastSenderId: value.lastSenderId } : {}),

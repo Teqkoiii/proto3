@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   Check,
   Dumbbell,
+  ImagePlus,
   MessageSquare,
   Minimize2,
   Send,
@@ -16,7 +17,20 @@ import {
   type CloudChatMessage,
   type CloudConversation,
 } from '../../services/communityChatService';
-import { gymRepository, type CommunityMember } from '../../services/gymRepository';
+import { gymRepository, type CommunityGifResult, type CommunityMember } from '../../services/gymRepository';
+
+function isSupportedGifUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+    return url.protocol === 'https:' &&
+      (host === 'media.giphy.com' || host === 'giphy.com' ||
+       host === 'media.tenor.com' || host === 'tenor.com' || host.endsWith('.giphy.com') || host.endsWith('.tenor.com')) &&
+      (url.pathname.toLowerCase().endsWith('.gif') || host === 'media.tenor.com' || host === 'media.giphy.com');
+  } catch {
+    return false;
+  }
+}
 
 const QUICK_PROMPTS = [
   'Bin in 10 Min da! 💪',
@@ -32,6 +46,7 @@ export function ChatDrawer({
   currentUserName,
   activePartner,
   conversations,
+  members,
   onSelectPartner,
   onNavigateToLogin,
 }: {
@@ -41,13 +56,26 @@ export function ChatDrawer({
   currentUserName: string;
   activePartner: CommunityMember | null;
   conversations: CloudConversation[];
+  members: CommunityMember[];
   onSelectPartner: (partner: CommunityMember | null) => void;
   onNavigateToLogin: () => void;
 }) {
   const [conversationId, setConversationId] = useState<string | null>(null);
-  const [otherParticipantUid, setOtherParticipantUid] = useState<string | undefined>();
+  const [otherParticipantUid, setOtherParticipantUid] = useState<string | string[] | undefined>();
+  const [showGroupForm, setShowGroupForm] = useState(false);
+  const [groupTitle, setGroupTitle] = useState('');
+  const [selectedGroupMemberIds, setSelectedGroupMemberIds] = useState<string[]>([]);
+  const [groupBusy, setGroupBusy] = useState(false);
+  const [groupError, setGroupError] = useState<string | null>(null);
+  const [createdGroup, setCreatedGroup] = useState<CloudConversation | null>(null);
   const [messages, setMessages] = useState<CloudChatMessage[]>([]);
   const [text, setText] = useState('');
+  const [showGifInput, setShowGifInput] = useState(false);
+  const [gifSearchTerm, setGifSearchTerm] = useState('gym');
+  const [gifResults, setGifResults] = useState<CommunityGifResult[]>([]);
+  const [gifSearching, setGifSearching] = useState(false);
+  const [gifSearchError, setGifSearchError] = useState<string | null>(null);
+  const [gifUrl, setGifUrl] = useState('');
   const [sending, setSending] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -64,6 +92,14 @@ export function ChatDrawer({
     setConversationId(null);
     setOtherParticipantUid(undefined);
     setMessages([]);
+    if (activePartner.id.startsWith('group_')) {
+      const group = [createdGroup, ...conversations].find((conversation) => conversation?.id === activePartner.id);
+      if (group) {
+        setConversationId(group.id);
+        setOtherParticipantUid(group.participantIds.filter((uid) => uid !== currentUserId));
+      }
+      return () => { active = false; };
+    }
     const existing = conversations.find((conversation) => (
       conversation.participantIds.includes(currentUserId) &&
       conversation.participantIds.includes(activePartner.id)
@@ -97,7 +133,13 @@ export function ChatDrawer({
   useEffect(() => {
     if (!conversationId) return;
     const unsub = subscribeToMessages(conversationId, (msgs) => {
-      setMessages(msgs);
+      // Merge poll results with a just-sent message if a poll began before the write finished.
+      setMessages((current) => {
+        const merged = new Map<string, CloudChatMessage>();
+        for (const message of msgs) merged.set(message.id, message);
+        for (const message of current) if (!merged.has(message.id)) merged.set(message.id, message);
+        return [...merged.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      });
     });
     return () => unsub();
   }, [conversationId]);
@@ -107,6 +149,44 @@ export function ChatDrawer({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  const handleCreateGroup = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (groupBusy || selectedGroupMemberIds.length < 2) return;
+    setGroupBusy(true);
+    setGroupError(null);
+    try {
+      const result = await gymRepository.createCommunityGroupConversation(selectedGroupMemberIds, groupTitle.trim());
+      const group: CloudConversation = {
+        id: result.conversationId,
+        participantIds: result.participantIds,
+        participantNames: {},
+        title: groupTitle.trim() || 'Gym-Gruppe',
+        createdAt: new Date().toISOString(),
+      };
+      setCreatedGroup(group);
+      setShowGroupForm(false);
+      setSelectedGroupMemberIds([]);
+      onSelectPartner({
+        id: group.id,
+        firstName: group.title ?? 'Gym-Gruppe',
+        lastNameInitial: '',
+        courseOfStudy: `Gruppe · ${group.participantIds.length} Mitglieder`,
+        trainingGoals: [],
+        preferredTimes: [],
+        interests: [],
+        bio: '',
+        isPublicPresence: true,
+        activeNow: false,
+        plannedNext: null,
+        isSelf: false,
+      });
+    } catch (error) {
+      setGroupError(error instanceof Error ? error.message : 'Gruppe konnte nicht erstellt werden.');
+    } finally {
+      setGroupBusy(false);
+    }
+  };
+
   if (!isOpen) return null;
 
   const handleSend = async (customText?: string) => {
@@ -115,13 +195,16 @@ export function ChatDrawer({
 
     setSending(true);
     try {
-      await sendChatMessage(
+      const sentMessage = await sendChatMessage(
         conversationId,
         currentUserId,
         currentUserName,
         toSend.trim(),
         otherParticipantUid,
       );
+      setMessages((current) => current.some((message) => message.id === sentMessage.id)
+        ? current
+        : [...current, sentMessage].sort((a, b) => a.createdAt.localeCompare(b.createdAt)));
       if (!customText) setText('');
     } finally {
       setSending(false);
@@ -153,7 +236,7 @@ export function ChatDrawer({
           <div>
             <h3 className="chat-header-title">
               {activePartner
-                ? `${activePartner.firstName} ${activePartner.lastNameInitial}.`
+                ? `${activePartner.firstName}${activePartner.lastNameInitial ? ` ${activePartner.lastNameInitial}.` : ''}`
                 : 'Gym Community Chat'}
             </h3>
             <p className="chat-header-subtitle">
@@ -196,7 +279,33 @@ export function ChatDrawer({
         </div>
       ) : !activePartner ? (
         <div className="chat-conversations-list">
-          <p className="text-xs text-slate-400 px-4 pt-3 pb-1">
+          <div className="px-4 pt-3 pb-2">
+            <button type="button" className="button button-secondary compact-button" onClick={() => setShowGroupForm((open) => !open)}>
+              <Users size={15} /> Gruppe erstellen
+            </button>
+            {showGroupForm && (
+              <form className="stack-form mt-3" onSubmit={handleCreateGroup}>
+                <input className="text-input" value={groupTitle} maxLength={80}
+                  onChange={(event) => setGroupTitle(event.target.value)} placeholder="Gruppenname (optional)" />
+                <p className="text-xs text-slate-400">Wähle mindestens zwei weitere DHBW-Studierende aus.</p>
+                <div className="max-h-40 overflow-y-auto flex flex-col gap-2">
+                  {members.filter((member) => !member.isSelf && member.isPublicPresence).map((member) => (
+                    <label key={member.id} className="flex items-center gap-2 text-sm text-slate-200">
+                      <input type="checkbox" checked={selectedGroupMemberIds.includes(member.id)}
+                        onChange={(event) => setSelectedGroupMemberIds((current) => event.target.checked
+                          ? [...current, member.id] : current.filter((id) => id !== member.id))} />
+                      {member.firstName} {member.lastNameInitial ? `${member.lastNameInitial}.` : ''} <span className="text-xs text-slate-500">· {member.courseOfStudy}</span>
+                    </label>
+                  ))}
+                </div>
+                {groupError && <p className="text-xs text-red-400">{groupError}</p>}
+                <button type="submit" className="button button-primary" disabled={groupBusy || selectedGroupMemberIds.length < 2}>
+                  {groupBusy ? 'Gruppe wird erstellt…' : 'Gruppe erstellen'}
+                </button>
+              </form>
+            )}
+          </div>
+          <p className="text-xs text-slate-400 px-4 pt-1 pb-1">
             Wähle einen Trainingspartner aus der Community oder antworte auf bestehende Nachrichten:
           </p>
 
@@ -212,17 +321,18 @@ export function ChatDrawer({
             <ul className="chat-conv-items">
               {conversations.map((c) => {
                 const otherUid = c.participantIds.find((id) => id !== currentUserId) || '';
-                const otherName = c.participantNames?.[otherUid] || 'Trainingspartner';
+                const isGroup = c.participantIds.length > 2 || c.id.startsWith('group_');
+                const otherName = c.title || c.participantNames?.[otherUid] || 'Trainingspartner';
                 return (
                   <li
                     key={c.id}
                     className="chat-conv-row"
                     onClick={() => {
                       onSelectPartner({
-                        id: otherUid,
+                        id: isGroup ? c.id : otherUid,
                         firstName: otherName.split(' ')[0] || otherName,
-                        lastNameInitial: otherName.split(' ')[1]?.replace('.', '') || '',
-                        courseOfStudy: 'DHBW Bad Mergentheim',
+                        lastNameInitial: isGroup ? '' : otherName.split(' ')[1]?.replace('.', '') || '',
+                        courseOfStudy: isGroup ? `Gruppe · ${c.participantIds.length} Mitglieder` : 'DHBW Bad Mergentheim',
                         trainingGoals: [],
                         preferredTimes: [],
                         interests: [],
@@ -282,7 +392,13 @@ export function ChatDrawer({
                   >
                     {!isMe && <span className="chat-bubble-sender">{m.senderName}</span>}
                     <div className={`chat-bubble ${isMe ? 'bubble-self' : 'bubble-partner'}`}>
-                      <p className="chat-bubble-text">{m.text}</p>
+                      {isSupportedGifUrl(m.text) ? (
+                        <a href={m.text} target="_blank" rel="noreferrer" className="chat-gif-link" aria-label="GIF in neuem Tab öffnen">
+                          <img src={m.text} alt="Geteiltes GIF" loading="lazy" className="chat-gif-image" />
+                        </a>
+                      ) : (
+                        <p className="chat-bubble-text">{m.text}</p>
+                      )}
                       <span className="chat-bubble-time">
                         {new Date(m.createdAt).toLocaleTimeString([], {
                           hour: '2-digit',
@@ -312,6 +428,87 @@ export function ChatDrawer({
             ))}
           </div>
 
+          {showGifInput && (
+            <div className="px-3 py-3 space-y-2 border-t border-slate-700/60">
+              <label className="block text-xs font-semibold text-slate-300" htmlFor="chat-gif-search">
+                GIF suchen
+              </label>
+              <form className="chat-input-bar" onSubmit={(event) => {
+                event.preventDefault();
+                const query = gifSearchTerm.trim();
+                if (!query || gifSearching) return;
+                setGifSearching(true);
+                setGifSearchError(null);
+                void gymRepository.searchCommunityGifs(query).then((gifs) => {
+                  setGifResults(gifs);
+                  if (gifs.length === 0) setGifSearchError('Keine GIFs gefunden. Probiere einen anderen Suchbegriff.');
+                }).catch((error: unknown) => {
+                  setGifResults([]);
+                  setGifSearchError(error instanceof Error ? error.message : 'GIFs konnten nicht geladen werden.');
+                }).finally(() => setGifSearching(false));
+              }}>
+                <input
+                  id="chat-gif-search"
+                  type="search"
+                  className="chat-text-input"
+                  placeholder="z. B. Gym, feiern, lachen ..."
+                  value={gifSearchTerm}
+                  maxLength={80}
+                  onChange={(event) => setGifSearchTerm(event.target.value)}
+                  aria-label="GIF-Suchbegriff"
+                />
+                <button type="submit" className="chat-send-button" disabled={!gifSearchTerm.trim() || gifSearching} aria-label="GIFs suchen" title="GIFs suchen">
+                  {gifSearching ? <span className="text-xs">…</span> : <Sparkles size={15} />}
+                </button>
+              </form>
+              {gifSearchError && <p role="status" className="text-[11px] text-amber-300">{gifSearchError}</p>}
+              {gifResults.length > 0 && (
+                <div className="grid grid-cols-3 gap-2 max-h-56 overflow-y-auto" aria-label="GIF-Suchergebnisse">
+                  {gifResults.map((gif) => (
+                    <button
+                      key={gif.id}
+                      type="button"
+                      className="overflow-hidden rounded-lg border border-slate-700 bg-slate-900 hover:border-cyan-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400 disabled:opacity-50"
+                      onClick={() => {
+                        if (!isSupportedGifUrl(gif.url) || sending) return;
+                        void handleSend(gif.url).then(() => setShowGifInput(false));
+                      }}
+                      disabled={sending}
+                      title={`GIF senden: ${gif.title}`}
+                      aria-label={`GIF senden: ${gif.title}`}
+                    >
+                      <img src={gif.previewUrl} alt={gif.title} loading="lazy" className="h-20 w-full object-cover" />
+                    </button>
+                  ))}
+                </div>
+              )}
+              <p className="text-[11px] text-slate-500">Tippe ein GIF an, um es direkt zu senden.</p>
+              <form className="chat-input-bar" onSubmit={(event) => {
+                event.preventDefault();
+                const url = gifUrl.trim();
+                if (!isSupportedGifUrl(url) || sending) return;
+                void handleSend(url).then(() => {
+                  setGifUrl('');
+                  setShowGifInput(false);
+                });
+              }}>
+                <input
+                  type="url"
+                  className="chat-text-input"
+                  placeholder="Oder direkten GIF-Link einfügen"
+                  value={gifUrl}
+                  maxLength={500}
+                  onChange={(event) => setGifUrl(event.target.value)}
+                  aria-label="Direkter GIF-Link"
+                />
+                <button type="submit" className="chat-send-button"
+                  disabled={!isSupportedGifUrl(gifUrl.trim()) || sending} aria-label="GIF-Link senden">
+                  <Send size={15} />
+                </button>
+              </form>
+            </div>
+          )}
+
           {/* Input Bar */}
           <form
             className="chat-input-bar"
@@ -320,6 +517,10 @@ export function ChatDrawer({
               void handleSend();
             }}
           >
+            <button type="button" className="chat-send-button" onClick={() => setShowGifInput((open) => !open)}
+              aria-label="GIF suchen oder einfügen" title="GIF bei Tenor/Giphy suchen oder Link einfügen">
+              <ImagePlus size={16} />
+            </button>
             <input
               type="text"
               className="chat-text-input"

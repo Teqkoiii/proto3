@@ -3012,3 +3012,19 @@
   margin: 6px 0 0;
   line-height: 1.5;
 }
+
+
+.chat-gif-link {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  border-radius: 8px;
+}
+
+.chat-gif-image {
+  display: block;
+  max-width: min(260px, 100%);
+  max-height: 220px;
+  object-fit: contain;
+  border-radius: 8px;
+}
