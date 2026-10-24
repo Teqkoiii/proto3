@@ -155,7 +155,11 @@ export function Training({ workouts, busy, error, online, onCreate, onDelete }: 
     event.preventDefault();
     if (exercises.length === 0 || exercises.some((exercise) => !exercise.name.trim())) return;
 
-    const occurredAt = new Date(`${date}T12:00:00`).toISOString();
+    // For today's date, use the current instant rather than noon: before noon,
+    // noon would be a future timestamp and the API correctly rejects it.
+    const occurredAt = date === todayDateValue()
+      ? new Date().toISOString()
+      : new Date(`${date}T12:00:00`).toISOString();
     onCreate({
       title: title.trim(),
       occurredAt,
