@@ -24,6 +24,7 @@ export interface CloudConversation {
   lastMessageAt?: string;
   lastSenderId?: string;
   createdAt: string;
+  title?: string;
 }
 
 export interface CloudChatMessage {
@@ -260,7 +261,7 @@ export async function sendChatMessage(
   senderId: string,
   senderName: string,
   text: string,
-  otherUserId?: string,
+  otherUserId?: string | string[],
 ): Promise<CloudChatMessage> {
   const msgId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
   const now = new Date().toISOString();
@@ -294,8 +295,10 @@ export async function sendChatMessage(
     console.error('[Community chat] Conversation preview update failed', err);
   });
 
-  if (otherUserId && otherUserId !== senderId) {
-    void sendNotification(otherUserId, {
+  const recipients = (Array.isArray(otherUserId) ? otherUserId : [otherUserId])
+    .filter((uid): uid is string => Boolean(uid) && uid !== senderId);
+  for (const recipientUid of recipients) {
+    void sendNotification(recipientUid, {
       type: 'new_message',
       title: `Neue Nachricht von ${senderName}`,
       message: text.trim().slice(0, 100),
