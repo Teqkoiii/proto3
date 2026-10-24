@@ -96,8 +96,12 @@ test('direct test-project server startup refuses before creating a database or l
   const tempDirectory = mkdtempSync(join(tmpdir(), 'dhbw-test-server-guard-'));
   try {
     const databasePath = join(tempDirectory, 'not-created', 'gym-test.sqlite3');
+    // Prevent the developer's repository .env from supplying the values this test intentionally omits.
+    const emptyDotenvPath = join(tempDirectory, '.env-empty');
+    writeFileSync(emptyDotenvPath, '');
     const environment = {
       ...process.env,
+      DOTENV_CONFIG_PATH: emptyDotenvPath,
       NODE_ENV: 'development',
       FIREBASE_PROJECT_ID: 'dhbw-gym-test',
       DHBW_TEST_CREDENTIALS_CONFIRMED: 'dhbw-gym-test',
