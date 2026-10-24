@@ -16,6 +16,16 @@ import {
 import type { CommunityProfile, GymSession } from '../../services/gymRepository';
 import { Field, InlineNotice, PageHeading, SectionTitle } from './components';
 
+const DHBW_BAD_MERGENTHEIM_STUDY_PROGRAMS = [
+  'BWL – Handel',
+  'BWL – Food Management',
+  'BWL – International Business',
+  'BWL – International Retail Management',
+  'Wirtschaftsingenieurwesen',
+  'Pflege',
+  'Sonstiger Studiengang',
+] as const;
+
 const AVAILABLE_GOALS = [
   'Hypertrophie (Muskelaufbau)',
   'Kraftsport (Powerlifting)',
@@ -63,7 +73,11 @@ export function Profile({
   // Community profile states
   const [firstName, setFirstName] = useState(profile?.firstName ?? '');
   const [lastNameInitial, setLastNameInitial] = useState(profile?.lastNameInitial ?? '');
-  const [courseOfStudy, setCourseOfStudy] = useState(profile?.courseOfStudy ?? '');
+  const [courseOfStudy, setCourseOfStudy] = useState(
+    DHBW_BAD_MERGENTHEIM_STUDY_PROGRAMS.includes(profile?.courseOfStudy as (typeof DHBW_BAD_MERGENTHEIM_STUDY_PROGRAMS)[number])
+      ? profile?.courseOfStudy ?? ''
+      : profile?.courseOfStudy ? 'Sonstiger Studiengang' : '',
+  );
   const [selectedGoals, setSelectedGoals] = useState<string[]>(profile?.trainingGoals ?? []);
   const [selectedTimes, setSelectedTimes] = useState<string[]>(profile?.preferredTimes ?? []);
   const [bio, setBio] = useState(profile?.bio ?? '');
@@ -207,15 +221,18 @@ export function Profile({
               </Field>
             </div>
 
-            <Field label="Studiengang / Fakultät">
-              <input
-                type="text"
+            <Field label="Studiengang an der DHBW Bad Mergentheim">
+              <select
                 className="text-input"
-                maxLength={80}
                 value={courseOfStudy}
-                placeholder="z. B. Wirtschaftsinformatik, BWL-Handel, Maschinenbau"
                 onChange={(e) => setCourseOfStudy(e.target.value)}
-              />
+                required
+              >
+                <option value="" disabled>Studiengang auswählen</option>
+                {DHBW_BAD_MERGENTHEIM_STUDY_PROGRAMS.map((program) => (
+                  <option key={program} value={program}>{program}</option>
+                ))}
+              </select>
             </Field>
 
             <Field label="Deine Trainingsziele">
