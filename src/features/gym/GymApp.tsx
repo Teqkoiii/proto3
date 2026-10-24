@@ -728,6 +728,7 @@ export function GymApp() {
         }
         activePartner={activeChatPartner}
         conversations={activeConversations}
+        members={communityMembers}
         onSelectPartner={setActiveChatPartner}
         onNavigateToLogin={() => setPage('profile')}
       />
