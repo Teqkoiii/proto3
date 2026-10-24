@@ -23,6 +23,39 @@ export interface CommunityConversationWrite {
   createdAt: string;
 }
 
+export interface CommunityConversationDto {
+  id: string;
+  participantIds: string[];
+  participantNames: Record<string, string>;
+  createdAt: string;
+  lastMessageText?: string;
+  lastMessageAt?: string;
+  lastSenderId?: string;
+}
+
+export interface CommunityChatMessageDto {
+  id: string;
+  conversationId: string;
+  senderId: string;
+  senderName: string;
+  text: string;
+  createdAt: string;
+}
+
+export interface CommunityNotificationDto {
+  id: string;
+  userId: string;
+  senderId: string;
+  type: 'partner_request' | 'partner_accepted' | 'new_message' | 'slot_reminder' | 'gym_alert';
+  title: string;
+  message: string;
+  read: boolean;
+  linkUrl?: string;
+  resourceId?: string;
+  eventId?: string;
+  createdAt: string;
+}
+
 export type PartnerNotificationStatus = 'sent' | 'unavailable' | 'failed';
 
 interface GymApiOptions {
@@ -33,6 +66,9 @@ interface GymApiOptions {
   firebaseTokenVerifier?: (token: string) => Promise<VerifiedFirebaseIdentity>;
   partnerNotificationWriter?: (notification: PartnerNotificationWrite) => Promise<void>;
   communityConversationWriter?: (conversation: CommunityConversationWrite) => Promise<void>;
+  communityConversationReader?: (userUid: string) => Promise<CommunityConversationDto[]>;
+  communityMessageReader?: (userUid: string, conversationId: string) => Promise<CommunityChatMessageDto[] | null>;
+  communityNotificationReader?: (userUid: string) => Promise<CommunityNotificationDto[]>;
 }
 
 interface GymSessionRequest extends Request {
@@ -137,12 +173,16 @@ export function createGymAppApi(database: DatabaseSync, options: GymApiOptions =
 
   app.use((request, response, next) => {
     const origin = request.get('Origin');
-    const effectiveHost = request.get('x-forwarded-host') || request.get('host');
+    // Compare the complete origin, including scheme and host. X-Forwarded-Host
+    // is not trusted because a client may supply it when proxy stripping is unknown.
+    const effectiveHost = request.get('host')?.toLowerCase();
+    const expectedProtocol = secureCookies ? 'https:' : 'http:';
     let sameOrigin = false;
     if (origin) {
       try {
-        const originHost = new URL(origin).host;
-        sameOrigin = originHost === effectiveHost || originHost === request.get('host');
+        const parsedOrigin = new URL(origin);
+        sameOrigin = parsedOrigin.protocol === expectedProtocol &&
+          parsedOrigin.host.toLowerCase() === effectiveHost;
       } catch {
         sameOrigin = false;
       }
@@ -304,6 +344,37 @@ export function createGymAppApi(database: DatabaseSync, options: GymApiOptions =
       conversationId: conversation.id,
       otherParticipantUid,
     });
+  }));
+
+  app.get('/api/gym/community/conversations', requireSession, asyncRoute(async (request, response) => {
+    if (!options.communityConversationReader) {
+      throw new GymDomainError('community chat is unavailable', 503);
+    }
+    const conversations = await options.communityConversationReader(request.firebaseIdentity!.uid);
+    response.json({ conversations });
+  }));
+
+  app.get('/api/gym/community/conversations/:conversationId/messages', requireSession, asyncRoute(async (request, response) => {
+    if (!options.communityMessageReader) {
+      throw new GymDomainError('community chat is unavailable', 503);
+    }
+    const conversationId = request.params.conversationId ?? '';
+    if (!/^[a-zA-Z0-9_-]{1,128}$/.test(conversationId)) {
+      throw new GymDomainError('conversation not found', 404);
+    }
+    const messages = await options.communityMessageReader(request.firebaseIdentity!.uid, conversationId);
+    if (messages === null) {
+      throw new GymDomainError('conversation not found', 404);
+    }
+    response.json({ messages });
+  }));
+
+  app.get('/api/gym/community/notifications', requireSession, asyncRoute(async (request, response) => {
+    if (!options.communityNotificationReader) {
+      throw new GymDomainError('community notifications are unavailable', 503);
+    }
+    const notifications = await options.communityNotificationReader(request.firebaseIdentity!.uid);
+    response.json({ notifications });
   }));
 
   app.get('/api/gym/community/partner-requests', requireSession, (request: GymSessionRequest, response) => {

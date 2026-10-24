@@ -16,7 +16,13 @@ import {
 import { getFirestore } from 'firebase-admin/firestore';
 import { createGymAppApi } from '../../server/gym-app-api.ts';
 import { getFirebaseAdminApp } from '../../server/firebaseAuth.ts';
-import { writeCommunityConversation, writePartnerNotification } from '../../server/firebaseNotifications.ts';
+import {
+  readCommunityConversations,
+  readCommunityMessages,
+  readCommunityNotifications,
+  writeCommunityConversation,
+  writePartnerNotification,
+} from '../../server/firebaseNotifications.ts';
 
 const projectId = 'demo-gym-auth-test';
 const authEmulatorHost = '127.0.0.1:9099';
@@ -35,8 +41,25 @@ test('verified emulator users receive server-authorized partner request notifica
   connectAuthEmulator(auth, `http://${authEmulatorHost}`, { disableWarnings: true });
   const database = new DatabaseSync(':memory:');
   const server = createServer(createGymAppApi(database, {
-    partnerNotificationWriter: writePartnerNotification,
+    partnerNotificationWriter: async (notification) => {
+      try {
+        await writePartnerNotification(notification);
+      } catch (error) {
+        // Keep emulator-only diagnostics useful without logging notification payloads.
+        console.error('[API emulator test] notification write error', {
+          name: error instanceof Error ? error.name : 'unknown',
+          code: typeof error === 'object' && error !== null && 'code' in error
+            ? String((error as { code: unknown }).code)
+            : 'unknown',
+          message: error instanceof Error ? error.message : 'unknown',
+        });
+        throw error;
+      }
+    },
     communityConversationWriter: writeCommunityConversation,
+    communityConversationReader: readCommunityConversations,
+    communityMessageReader: readCommunityMessages,
+    communityNotificationReader: readCommunityNotifications,
   }));
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
@@ -102,6 +125,75 @@ test('verified emulator users receive server-authorized partner request notifica
   const conversationId = conversationResponse.body.conversationId as string;
   const conversation = await firestore.collection('conversations').doc(conversationId).get();
   assert.deepEqual(conversation.get('participantIds'), [alice.uid, bob.uid].sort());
+
+  const messageId = 'message_for_api';
+  await firestore.collection('conversations').doc(conversationId).collection('messages').doc(messageId).set({
+    id: messageId,
+    conversationId,
+    senderId: alice.uid,
+    senderName: 'Emulator Alice',
+    text: 'Validated server-side message',
+    createdAt: new Date().toISOString(),
+  });
+  await firestore.collection('conversations').doc(conversationId).collection('messages').doc('unsafe_message').set({
+    id: 'unsafe_message',
+    conversationId,
+    senderId: alice.uid,
+    senderName: 'Emulator Alice',
+    text: 'This malformed message must be omitted',
+    privateEmail: 'must-not-leak@example.com',
+  });
+  await firestore.collection('conversations').doc('unsafe_conversation').set({
+    id: 'unsafe_conversation',
+    participantIds: [alice.uid, bob.uid],
+    participantNames: { [alice.uid]: 'Emulator Alice', [bob.uid]: 'Emulator Bob' },
+    createdAt: new Date().toISOString(),
+    privateEmail: 'must-not-leak@example.com',
+  });
+  await firestore.collection('users').doc(alice.uid).collection('notifications').doc('unsafe_notification').set({
+    id: 'unsafe_notification',
+    userId: alice.uid,
+    senderId: bob.uid,
+    type: 'partner_accepted',
+    title: 'Unsafe notification',
+    message: 'Must be omitted',
+    read: false,
+    privateEmail: 'must-not-leak@example.com',
+  });
+
+  const conversationList = await api(baseUrl, '/api/gym/community/conversations', alice.token);
+  assert.equal(conversationList.response.status, 200);
+  const conversations = conversationList.body.conversations as Array<Record<string, unknown>>;
+  assert.ok(conversations.some((item) => item.id === conversationId));
+  assert.ok(!conversations.some((item) => item.id === 'unsafe_conversation'));
+  assert.ok(conversations.every((item) => !('privateEmail' in item)));
+
+  const messagesResponse = await api(
+    baseUrl,
+    `/api/gym/community/conversations/${conversationId}/messages`,
+    alice.token,
+  );
+  assert.equal(messagesResponse.response.status, 200);
+  const messages = messagesResponse.body.messages as Array<Record<string, unknown>>;
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0]?.text, 'Validated server-side message');
+  assert.ok(!('privateEmail' in (messages[0] ?? {})));
+
+  const notificationsResponse = await api(baseUrl, '/api/gym/community/notifications', alice.token);
+  assert.equal(notificationsResponse.response.status, 200);
+  const notifications = notificationsResponse.body.notifications as Array<Record<string, unknown>>;
+  assert.ok(notifications.some((item) => item.type === 'partner_accepted'));
+  assert.ok(!notifications.some((item) => item.id === 'unsafe_notification'));
+  assert.ok(notifications.every((item) => !('privateEmail' in item)));
+
+  const charlie = await createVerifiedAccount(auth, `community-outsider-${randomUUID()}@dhbw-mosbach.de`);
+  await linkAccount(baseUrl, charlie.token);
+  const outsiderMessages = await api(
+    baseUrl,
+    `/api/gym/community/conversations/${conversationId}/messages`,
+    charlie.token,
+  );
+  assert.equal(outsiderMessages.response.status, 404);
 });
 
 async function createVerifiedAccount(auth: ReturnType<typeof getAuth>, email: string) {
