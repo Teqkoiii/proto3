@@ -426,17 +426,18 @@ test('legacy profile linking rate-limits failed previous-password proofs per ver
   const otherEmail = 'unrelated-profile@dhbw.de';
   await createLegacyProfile(database, { email: otherEmail, password: 'other-correct-password' });
 
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    const response = await fetch(`${baseUrl}/api/gym/auth/link`, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${firebaseToken('rate-limit-uid', targetEmail)}`,
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({ legacyPassword: 'incorrect-password-value' }),
-    });
-    assert.equal(response.status, 401, `failed proof ${attempt + 1} should be rejected`);
-  }
+  const concurrentAttempts = await Promise.all(Array.from({ length: 8 }, () => fetch(`${baseUrl}/api/gym/auth/link`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${firebaseToken('rate-limit-uid', targetEmail)}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ legacyPassword: 'incorrect-password-value' }),
+  })));
+  assert.equal(concurrentAttempts.filter((response) => response.status === 401).length, 5,
+    'only five concurrent password proofs may reach password verification');
+  assert.equal(concurrentAttempts.filter((response) => response.status === 429).length, 3,
+    'excess concurrent attempts must be throttled before password verification');
 
   const blockedCorrectPassword = await fetch(`${baseUrl}/api/gym/auth/link`, {
     method: 'POST',
