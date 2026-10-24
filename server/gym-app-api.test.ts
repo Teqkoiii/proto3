@@ -73,8 +73,8 @@ async function createAuthenticatedClient(baseUrl: string, uid: string, options: 
   };
 }
 
-async function createLegacyProfile(database: DatabaseSync, options: { email?: string; password?: string } = {}) {
-  const token = 'a'.repeat(64);
+async function createLegacyProfile(database: DatabaseSync, options: { email?: string; password?: string; token?: string } = {}) {
+  const token = options.token ?? 'a'.repeat(64);
   const now = new Date().toISOString();
   const repository = new GymAppRepository(database);
   const principalId = repository.createAnonymousPrincipal(
@@ -424,7 +424,7 @@ test('legacy profile linking rate-limits failed previous-password proofs per ver
   const targetEmail = 'rate-limited@dhbw.de';
   await createLegacyProfile(database, { email: targetEmail, password: 'correct-previous-password' });
   const otherEmail = 'unrelated-profile@dhbw.de';
-  await createLegacyProfile(database, { email: otherEmail, password: 'other-correct-password' });
+  await createLegacyProfile(database, { email: otherEmail, password: 'other-correct-password', token: 'b'.repeat(64) });
 
   const concurrentAttempts = await Promise.all(Array.from({ length: 8 }, () => fetch(`${baseUrl}/api/gym/auth/link`, {
     method: 'POST',
