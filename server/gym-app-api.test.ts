@@ -378,6 +378,47 @@ test('legacy profiles migrate only with a matching legacy session or previous pa
   assert.equal(duplicateIdentity.status, 409, 'an existing profile cannot be reassigned to a second Firebase UID');
 });
 
+test('expired legacy sessions cannot prove ownership, but the previous password can', async (t) => {
+  const { baseUrl, database } = await startApi(t);
+  const email = 'expired-session@dhbw.de';
+  const previousPassword = 'previous-password';
+  const legacy = await createLegacyProfile(database, { email, password: previousPassword });
+  const sessionHash = createHash('sha256').update(legacy.token).digest('hex');
+  database.prepare('UPDATE app_sessions SET expires_at = ? WHERE session_hash = ?')
+    .run(new Date(Date.now() - 60_000).toISOString(), sessionHash);
+
+  const expiredCookieAttempt = await fetch(`${baseUrl}/api/gym/auth/link`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${firebaseToken('expired-session-uid', email)}`,
+      cookie: `gym_app_session=${legacy.token}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({}),
+  });
+  assert.equal(expiredCookieAttempt.status, 409);
+  assert.equal(
+    legacy.repository.findPrincipalForVerifiedAccount('firebase', 'expired-session-uid'),
+    undefined,
+    'an expired legacy cookie must not link the existing profile',
+  );
+
+  const passwordProofAttempt = await fetch(`${baseUrl}/api/gym/auth/link`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${firebaseToken('expired-session-uid', email)}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ legacyPassword: previousPassword }),
+  });
+  assert.equal(passwordProofAttempt.status, 200);
+  assert.equal(
+    legacy.repository.findPrincipalForVerifiedAccount('firebase', 'expired-session-uid'),
+    legacy.principalId,
+    'the verified Firebase identity may migrate the profile using its correct previous password',
+  );
+});
+
 test('a legacy session cannot link a Firebase account with a different email', async (t) => {
   const { baseUrl, database } = await startApi(t);
   const legacy = await createLegacyProfile(database, { email: 'old-address@dhbw.de', password: 'previous-password' });
