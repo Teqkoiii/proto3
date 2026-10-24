@@ -298,7 +298,7 @@ export function createGymAppApi(database: DatabaseSync, options: GymApiOptions =
     response.status(204).end();
   });
 
-  app.get('/api/gym/occupancy', (request, response) => response.json(service.getOccupancy(request.query.range)));
+  app.get('/api/gym/occupancy', (request, response) => response.json(service.getOccupancy(request.query.range, { cleanup: false, recordSample: false })));
 
   app.post('/api/gym/check-in', requireSession, (request: GymSessionRequest, response) => {
     response.json(service.checkIn(request.principalId!));
