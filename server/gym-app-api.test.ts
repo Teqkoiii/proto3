@@ -104,11 +104,11 @@ test('public occupancy reads do not trigger cleanup or write history samples', a
     const snapshot = await response.json() as {
       count: number;
       source: string;
-      history: unknown[];
+      history: { points: unknown[] };
     };
     assert.equal(snapshot.count, 0, 'the public snapshot must still return the current occupancy');
     assert.equal(snapshot.source, 'self-reported-manual-check-ins');
-    assert.ok(Array.isArray(snapshot.history), 'the public endpoint must continue returning history');
+    assert.ok(Array.isArray(snapshot.history.points), 'the public endpoint must continue returning history points');
   }
   const afterSamples = (database.prepare('SELECT COUNT(*) AS count FROM occupancy_samples').get() as { count: number }).count;
   const expiredSessionRows = (database.prepare('SELECT COUNT(*) AS count FROM app_sessions WHERE session_hash = ?')
