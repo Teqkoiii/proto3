@@ -26,6 +26,8 @@ npm run build
 
 Required environment variables are documented in `.env.example`. Store real keys only in a local, untracked `.env` file. Never publish API keys, passwords, or other credentials.
 
+The in-chat GIF picker uses the Tenor API through the authenticated server route. Set `TENOR_API_KEY` in the server environment (or local ignored `.env`) before using GIF search. Keep the key server-side; it must never be added to `VITE_*` variables or client code. Without the key, normal text chat and direct GIF links still work, but search returns a configuration message.
+
 ## Isolated Firebase test setup
 
 The emulator commands use the non-routable `demo-gym-auth-test` project ID. They do not deploy Firestore rules or contact a live Firebase project.
