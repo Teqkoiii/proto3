@@ -63,6 +63,7 @@ export function ChatDrawer({
   const [messages, setMessages] = useState<CloudChatMessage[]>([]);
   const [text, setText] = useState('');
   const [showGifInput, setShowGifInput] = useState(false);
+  const [gifSearchTerm, setGifSearchTerm] = useState('gym');
   const [gifUrl, setGifUrl] = useState('');
   const [sending, setSending] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -344,28 +345,73 @@ export function ChatDrawer({
           </div>
 
           {showGifInput && (
-            <form className="chat-input-bar" onSubmit={(event) => {
-              event.preventDefault();
-              if (!isSupportedGifUrl(gifUrl.trim()) || sending) return;
-              void handleSend(gifUrl.trim()).then(() => {
-                setGifUrl('');
-                setShowGifInput(false);
-              });
-            }}>
-              <input
-                type="url"
-                className="chat-text-input"
-                placeholder="HTTPS-GIF-Link von Giphy oder Tenor"
-                value={gifUrl}
-                maxLength={500}
-                onChange={(event) => setGifUrl(event.target.value)}
-                aria-label="GIF-Link"
-              />
-              <button type="submit" className="chat-send-button"
-                disabled={!isSupportedGifUrl(gifUrl.trim()) || sending} aria-label="GIF senden">
-                <Send size={15} />
-              </button>
-            </form>
+            <div className="px-3 py-3 space-y-2 border-t border-slate-700/60">
+              <label className="block text-xs font-semibold text-slate-300" htmlFor="chat-gif-search">
+                GIF suchen
+              </label>
+              <form className="chat-input-bar" onSubmit={(event) => {
+                event.preventDefault();
+                const query = gifSearchTerm.trim() || 'gym';
+                window.open(`https://tenor.com/search/${encodeURIComponent(query)}-gifs`, '_blank', 'noopener,noreferrer');
+              }}>
+                <input
+                  id="chat-gif-search"
+                  type="search"
+                  className="chat-text-input"
+                  placeholder="z. B. Gym, feiern, lachen ..."
+                  value={gifSearchTerm}
+                  maxLength={80}
+                  onChange={(event) => setGifSearchTerm(event.target.value)}
+                  aria-label="GIF-Suchbegriff"
+                />
+                <button type="submit" className="chat-send-button" aria-label="GIFs bei Tenor suchen" title="Tenor-Suche öffnen">
+                  <Sparkles size={15} />
+                </button>
+              </form>
+              <div className="flex items-center gap-2 text-xs">
+                <a
+                  href={`https://tenor.com/search/${encodeURIComponent(gifSearchTerm.trim() || 'gym')}-gifs`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="chat-prompt-chip"
+                >
+                  Tenor öffnen
+                </a>
+                <a
+                  href={`https://giphy.com/search/${encodeURIComponent(gifSearchTerm.trim() || 'gym')}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="chat-prompt-chip"
+                >
+                  Giphy öffnen
+                </a>
+              </div>
+              <p className="text-[11px] text-slate-500">
+                GIF auswählen, den direkten GIF-Link kopieren und unten einfügen.
+              </p>
+              <form className="chat-input-bar" onSubmit={(event) => {
+                event.preventDefault();
+                if (!isSupportedGifUrl(gifUrl.trim()) || sending) return;
+                void handleSend(gifUrl.trim()).then(() => {
+                  setGifUrl('');
+                  setShowGifInput(false);
+                });
+              }}>
+                <input
+                  type="url"
+                  className="chat-text-input"
+                  placeholder="Direkten HTTPS-GIF-Link hier einfügen"
+                  value={gifUrl}
+                  maxLength={500}
+                  onChange={(event) => setGifUrl(event.target.value)}
+                  aria-label="Direkter GIF-Link"
+                />
+                <button type="submit" className="chat-send-button"
+                  disabled={!isSupportedGifUrl(gifUrl.trim()) || sending} aria-label="GIF senden">
+                  <Send size={15} />
+                </button>
+              </form>
+            </div>
           )}
 
           {/* Input Bar */}
@@ -377,7 +423,7 @@ export function ChatDrawer({
             }}
           >
             <button type="button" className="chat-send-button" onClick={() => setShowGifInput((open) => !open)}
-              aria-label="GIF-Link einfügen" title="GIF von Giphy oder Tenor senden">
+              aria-label="GIF suchen oder einfügen" title="GIF bei Tenor/Giphy suchen oder Link einfügen">
               <ImagePlus size={16} />
             </button>
             <input
