@@ -261,7 +261,7 @@ export async function sendChatMessage(
   senderName: string,
   text: string,
   otherUserId?: string,
-): Promise<void> {
+): Promise<CloudChatMessage> {
   const msgId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
   const now = new Date().toISOString();
   const path = `conversations/${conversationId}/messages/${msgId}`;
@@ -281,7 +281,7 @@ export async function sendChatMessage(
     await setDoc(doc(db, 'conversations', conversationId, 'messages', msgId), messageDoc);
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, path);
-    return;
+    throw err;
   }
 
   // These writes are secondary: keep the send action responsive while updating
@@ -307,6 +307,8 @@ export async function sendChatMessage(
     });
   }
 }
+
+  return messageDoc;
 
 /**
  * Firestore Real-Time Notifications & Slot Reminders
