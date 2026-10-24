@@ -21,6 +21,7 @@ export interface CommunityConversationWrite {
   participantIds: string[];
   participantNames: Record<string, string>;
   createdAt: string;
+  title?: string;
 }
 
 export interface CommunityConversationDto {
@@ -31,6 +32,7 @@ export interface CommunityConversationDto {
   lastMessageText?: string;
   lastMessageAt?: string;
   lastSenderId?: string;
+  title?: string;
 }
 
 export interface CommunityChatMessageDto {
@@ -391,6 +393,15 @@ export function createGymAppApi(database: DatabaseSync, options: GymApiOptions =
       conversationId: conversation.id,
       otherParticipantUid,
     });
+  }));
+
+  app.post('/api/gym/community/groups', requireSession, asyncRoute(async (request, response) => {
+    if (!options.communityConversationWriter) {
+      throw new GymDomainError('community chat is unavailable', 503);
+    }
+    const conversation = service.createCommunityGroupConversation(request.principalId!, request.body);
+    await options.communityConversationWriter(conversation);
+    response.status(201).json({ conversationId: conversation.id, participantIds: conversation.participantIds });
   }));
 
   app.get('/api/gym/community/conversations', requireSession, asyncRoute(async (request, response) => {
