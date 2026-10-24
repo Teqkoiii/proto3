@@ -97,7 +97,13 @@ export function ChatDrawer({
   useEffect(() => {
     if (!conversationId) return;
     const unsub = subscribeToMessages(conversationId, (msgs) => {
-      setMessages(msgs);
+      // Merge poll results with a just-sent message if a poll began before the write finished.
+      setMessages((current) => {
+        const merged = new Map<string, CloudChatMessage>();
+        for (const message of msgs) merged.set(message.id, message);
+        for (const message of current) if (!merged.has(message.id)) merged.set(message.id, message);
+        return [...merged.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      });
     });
     return () => unsub();
   }, [conversationId]);
@@ -115,13 +121,16 @@ export function ChatDrawer({
 
     setSending(true);
     try {
-      await sendChatMessage(
+      const sentMessage = await sendChatMessage(
         conversationId,
         currentUserId,
         currentUserName,
         toSend.trim(),
         otherParticipantUid,
       );
+      setMessages((current) => current.some((message) => message.id === sentMessage.id)
+        ? current
+        : [...current, sentMessage].sort((a, b) => a.createdAt.localeCompare(b.createdAt)));
       if (!customText) setText('');
     } finally {
       setSending(false);
