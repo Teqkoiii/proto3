@@ -17,12 +17,15 @@ import type { CommunityProfile, GymSession } from '../../services/gymRepository'
 import { Field, InlineNotice, PageHeading, SectionTitle } from './components';
 
 const DHBW_BAD_MERGENTHEIM_STUDY_PROGRAMS = [
-  'BWL – Handel',
-  'BWL – Food Management',
+  'BWL – Digital Business Management',
+  'BWL – Gesundheitsmanagement',
   'BWL – International Business',
-  'BWL – International Retail Management',
+  'Angewandte Informatik',
   'Wirtschaftsingenieurwesen',
+  'Wirtschaftsingenieurwesen – Innovations- und Produktmanagement',
+  'Wirtschaftsingenieurwesen – Internationales Technisches Vertriebsmanagement',
   'Pflege',
+  'International Program in Business',
   'Sonstiger Studiengang',
 ] as const;
 
