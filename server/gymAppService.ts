@@ -507,6 +507,42 @@ export class GymAppService {
     };
   }
 
+  createCommunityGroupConversation(principalId: string, input: unknown) {
+    if (!isRecord(input) || !Array.isArray(input.participantPrincipalIds)) {
+      throw new GymDomainError('participantPrincipalIds is required', 400);
+    }
+    const requestedIds = input.participantPrincipalIds;
+    if (requestedIds.length < 2 || requestedIds.length > 9 ||
+        !requestedIds.every((id) => typeof id === 'string' && id.trim().length > 0) ||
+        new Set(requestedIds).size !== requestedIds.length ||
+        requestedIds.includes(principalId)) {
+      throw new GymDomainError('a group needs 2 to 9 other unique members', 400);
+    }
+
+    const allPrincipalIds = [principalId, ...requestedIds as string[]];
+    const participantIds: string[] = [];
+    const participantNames: Record<string, string> = {};
+    for (const memberPrincipalId of allPrincipalIds) {
+      const profile = this.repository.getCommunityProfile(memberPrincipalId);
+      if (!profile || (memberPrincipalId !== principalId && !profile.isPublicPresence)) {
+        throw new GymDomainError('one or more community members are unavailable', 404);
+      }
+      const uid = this.repository.findFirebaseUidForPrincipal(memberPrincipalId);
+      if (!uid) throw new GymDomainError('all group members must have verified DHBW accounts', 409);
+      participantIds.push(uid);
+      participantNames[uid] = `${profile.firstName}${profile.lastNameInitial ? ` ${profile.lastNameInitial}.` : ''}`.slice(0, 60);
+    }
+
+    participantIds.sort();
+    const id = `group_${randomUUID()}`;
+    return {
+      id,
+      participantIds,
+      participantNames,
+      createdAt: new Date(this.now()).toISOString(),
+    };
+  }
+
   getPartnerRequestNotificationContext(principalId: string, requestId: string) {
     const request = this.repository.getPartnerRequestNotificationContext(requestId);
     if (!request || (request.senderId !== principalId && request.receiverId !== principalId)) {
