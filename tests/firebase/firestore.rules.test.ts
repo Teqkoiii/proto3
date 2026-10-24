@@ -583,8 +583,16 @@ test('notifications are private and cross-user delivery requires a real particip
     resourceId: 'wrong-id',
     eventId: 'wrong-message',
   })));
-  await assertSucceeds(setDoc(doc(aliceDb, 'users/bob/notifications/new-message'), notification({
-    id: 'new-message',
+  await assertSucceeds(setDoc(doc(aliceDb, 'users/bob/notifications/message-one'), notification({
+    id: 'message-one',
+    userId: bob.uid,
+    senderId: alice.uid,
+    type: 'new_message',
+    resourceId: 'conversation-one',
+    eventId: 'message-one',
+  })));
+  await assertFails(setDoc(doc(aliceDb, 'users/bob/notifications/duplicate-message-notification'), notification({
+    id: 'duplicate-message-notification',
     userId: bob.uid,
     senderId: alice.uid,
     type: 'new_message',
