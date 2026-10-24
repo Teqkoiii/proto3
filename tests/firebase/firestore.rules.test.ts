@@ -95,6 +95,12 @@ test('Firestore access requires a verified DHBW email and rejects lookalike doma
   });
 
   await assertSucceeds(getDoc(doc(signedIn(alice), 'community_profiles/alice')));
+  for (const identity of [
+    { uid: 'mosbach-lehre', email: 'student@lehre.mosbach.dhbw.de', email_verified: true },
+    { uid: 'mosbach-campus', email: 'student@mosbach.dhbw.de', email_verified: true },
+  ]) {
+    await assertSucceeds(getDoc(doc(signedIn(identity), 'community_profiles/alice')));
+  }
   await assertFails(getDoc(doc(signedIn({ ...alice, email_verified: false }), 'community_profiles/alice')));
   await assertFails(getDoc(doc(signedIn(outsider), 'community_profiles/alice')));
   await assertFails(setDoc(doc(signedIn(outsider), 'community_profiles/outsider'), profile('outsider', true)));
