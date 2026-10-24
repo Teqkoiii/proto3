@@ -114,51 +114,6 @@ service cloud.firestore {
              (data.participantIds.size() < 8 || isValidParticipantId(data.participantIds[7])) &&
              (data.participantIds.size() < 9 || isValidParticipantId(data.participantIds[8])) &&
              (data.participantIds.size() < 10 || isValidParticipantId(data.participantIds[9])) &&
-             (data.participantIds.size() < 2 || data.participantIds[0] != data.participantIds[1]) &&
-             (data.participantIds.size() < 3 || data.participantIds[0] != data.participantIds[2]) &&
-             (data.participantIds.size() < 4 || data.participantIds[0] != data.participantIds[3]) &&
-             (data.participantIds.size() < 5 || data.participantIds[0] != data.participantIds[4]) &&
-             (data.participantIds.size() < 6 || data.participantIds[0] != data.participantIds[5]) &&
-             (data.participantIds.size() < 7 || data.participantIds[0] != data.participantIds[6]) &&
-             (data.participantIds.size() < 8 || data.participantIds[0] != data.participantIds[7]) &&
-             (data.participantIds.size() < 9 || data.participantIds[0] != data.participantIds[8]) &&
-             (data.participantIds.size() < 10 || data.participantIds[0] != data.participantIds[9]) &&
-             (data.participantIds.size() < 3 || data.participantIds[1] != data.participantIds[2]) &&
-             (data.participantIds.size() < 4 || data.participantIds[1] != data.participantIds[3]) &&
-             (data.participantIds.size() < 5 || data.participantIds[1] != data.participantIds[4]) &&
-             (data.participantIds.size() < 6 || data.participantIds[1] != data.participantIds[5]) &&
-             (data.participantIds.size() < 7 || data.participantIds[1] != data.participantIds[6]) &&
-             (data.participantIds.size() < 8 || data.participantIds[1] != data.participantIds[7]) &&
-             (data.participantIds.size() < 9 || data.participantIds[1] != data.participantIds[8]) &&
-             (data.participantIds.size() < 10 || data.participantIds[1] != data.participantIds[9]) &&
-             (data.participantIds.size() < 4 || data.participantIds[2] != data.participantIds[3]) &&
-             (data.participantIds.size() < 5 || data.participantIds[2] != data.participantIds[4]) &&
-             (data.participantIds.size() < 6 || data.participantIds[2] != data.participantIds[5]) &&
-             (data.participantIds.size() < 7 || data.participantIds[2] != data.participantIds[6]) &&
-             (data.participantIds.size() < 8 || data.participantIds[2] != data.participantIds[7]) &&
-             (data.participantIds.size() < 9 || data.participantIds[2] != data.participantIds[8]) &&
-             (data.participantIds.size() < 10 || data.participantIds[2] != data.participantIds[9]) &&
-             (data.participantIds.size() < 5 || data.participantIds[3] != data.participantIds[4]) &&
-             (data.participantIds.size() < 6 || data.participantIds[3] != data.participantIds[5]) &&
-             (data.participantIds.size() < 7 || data.participantIds[3] != data.participantIds[6]) &&
-             (data.participantIds.size() < 8 || data.participantIds[3] != data.participantIds[7]) &&
-             (data.participantIds.size() < 9 || data.participantIds[3] != data.participantIds[8]) &&
-             (data.participantIds.size() < 10 || data.participantIds[3] != data.participantIds[9]) &&
-             (data.participantIds.size() < 6 || data.participantIds[4] != data.participantIds[5]) &&
-             (data.participantIds.size() < 7 || data.participantIds[4] != data.participantIds[6]) &&
-             (data.participantIds.size() < 8 || data.participantIds[4] != data.participantIds[7]) &&
-             (data.participantIds.size() < 9 || data.participantIds[4] != data.participantIds[8]) &&
-             (data.participantIds.size() < 10 || data.participantIds[4] != data.participantIds[9]) &&
-             (data.participantIds.size() < 7 || data.participantIds[5] != data.participantIds[6]) &&
-             (data.participantIds.size() < 8 || data.participantIds[5] != data.participantIds[7]) &&
-             (data.participantIds.size() < 9 || data.participantIds[5] != data.participantIds[8]) &&
-             (data.participantIds.size() < 10 || data.participantIds[5] != data.participantIds[9]) &&
-             (data.participantIds.size() < 8 || data.participantIds[6] != data.participantIds[7]) &&
-             (data.participantIds.size() < 9 || data.participantIds[6] != data.participantIds[8]) &&
-             (data.participantIds.size() < 10 || data.participantIds[6] != data.participantIds[9]) &&
-             (data.participantIds.size() < 9 || data.participantIds[7] != data.participantIds[8]) &&
-             (data.participantIds.size() < 10 || data.participantIds[7] != data.participantIds[9]) &&
-             (data.participantIds.size() < 10 || data.participantIds[8] != data.participantIds[9]) &&
              (!('participantNames' in data) || (data.participantNames is map &&
                data.participantNames.keys().hasOnly(data.participantIds) &&
                data.participantNames.keys().hasAll(data.participantIds) &&
