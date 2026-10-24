@@ -68,10 +68,32 @@ function normalizeEmail(value: unknown): string | undefined {
 
 export class GymAppService {
   private readonly repository: GymAppRepository;
+  private readonly legacyLinkFailures = new Map<string, { count: number; resetsAt: number }>();
   private readonly options: {
     maxCheckInHours: number;
     now?: () => number;
   };
+
+  private checkLegacyLinkRateLimit(email: string): void {
+    const timestamp = this.now();
+    for (const [key, entry] of this.legacyLinkFailures) {
+      if (entry.resetsAt <= timestamp) this.legacyLinkFailures.delete(key);
+    }
+    const entry = this.legacyLinkFailures.get(email);
+    if (entry && entry.count >= 5 && entry.resetsAt > timestamp) {
+      throw new GymDomainError('too many profile-link attempts; try again later', 429);
+    }
+  }
+
+  private recordLegacyLinkFailure(email: string): void {
+    const timestamp = this.now();
+    const entry = this.legacyLinkFailures.get(email);
+    if (!entry || entry.resetsAt <= timestamp) {
+      this.legacyLinkFailures.set(email, { count: 1, resetsAt: timestamp + 15 * 60_000 });
+      return;
+    }
+    entry.count += 1;
+  }
 
   constructor(
     repository: GymAppRepository,
@@ -165,10 +187,13 @@ export class GymAppService {
         if (legacyPassword === undefined) {
           throw new GymDomainError('existing profile requires its previous password to link', 409);
         }
+        this.checkLegacyLinkRateLimit(email);
         if (typeof legacyPassword !== 'string' || legacyPassword.length < 10 || legacyPassword.length > 128 ||
             !await verifyPasswordOrDummy(legacyPassword, credentials.passwordHash)) {
+          this.recordLegacyLinkFailure(email);
           throw new GymDomainError('previous account password is incorrect', 401);
         }
+        this.legacyLinkFailures.delete(email);
       }
       principalId = credentials.principalId;
     } else if (sessionPrincipal) {
