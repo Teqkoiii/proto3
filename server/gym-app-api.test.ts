@@ -88,6 +88,28 @@ async function createLegacyProfile(database: DatabaseSync, options: { email?: st
   return { token, principalId, repository };
 }
 
+test('public occupancy reads do not trigger cleanup or write history samples', async (t) => {
+  const { baseUrl, database } = await startApi(t);
+  const legacy = await createLegacyProfile(database);
+  const sessionHash = createHash('sha256').update(legacy.token).digest('hex');
+  database.prepare('UPDATE app_sessions SET expires_at = ? WHERE session_hash = ?')
+    .run(new Date(Date.now() - 60_000).toISOString(), sessionHash);
+  database.prepare('UPDATE occupancy_samples SET sampled_at = ?')
+    .run(new Date(Date.now() - 120_000).toISOString());
+
+  const beforeSamples = (database.prepare('SELECT COUNT(*) AS count FROM occupancy_samples').get() as { count: number }).count;
+  for (let i = 0; i < 3; i += 1) {
+    const response = await fetch(`${baseUrl}/api/gym/occupancy?range=24h`);
+    assert.equal(response.status, 200);
+  }
+  const afterSamples = (database.prepare('SELECT COUNT(*) AS count FROM occupancy_samples').get() as { count: number }).count;
+  const expiredSessionRows = (database.prepare('SELECT COUNT(*) AS count FROM app_sessions WHERE session_hash = ?')
+    .get(sessionHash) as { count: number }).count;
+
+  assert.equal(afterSamples, beforeSamples, 'public GET requests must not create occupancy history samples');
+  assert.equal(expiredSessionRows, 1, 'public GET requests must not trigger database cleanup');
+});
+
 test('manual check-in is shared, idempotent, and scoped to the server session', async (t) => {
   const { baseUrl } = await startApi(t);
   assert.equal((await fetch(`${baseUrl}/api/gym/check-in`, { method: 'POST' })).status, 401);
