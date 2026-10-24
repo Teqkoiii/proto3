@@ -284,6 +284,19 @@ test('conversations and chat messages are limited to conversation participants',
       senderName: 'Alice',
       text: 'Hello',
     });
+    await setDoc(doc(db, 'conversations/group-one'), {
+      id: 'group-one',
+      title: 'Frühschicht',
+      participantIds: [alice.uid, bob.uid, 'charlie'],
+      participantNames: { alice: 'Alice', bob: 'Bob', charlie: 'Charlie' },
+    });
+    await setDoc(doc(db, 'conversations/group-one/messages/group-message'), {
+      id: 'group-message',
+      conversationId: 'group-one',
+      senderId: alice.uid,
+      senderName: 'Alice',
+      text: 'Guten Morgen zusammen',
+    });
     await setDoc(doc(db, 'conversations/path-id-mismatch'), {
       id: 'different-id',
       participantIds: [alice.uid, bob.uid],
@@ -313,6 +326,10 @@ test('conversations and chat messages are limited to conversation participants',
   const messageRef = doc(aliceDb, 'conversations/conversation-one/messages/message-one');
   await assertSucceeds(getDoc(conversationRef));
   await assertSucceeds(getDoc(doc(bobDb, 'conversations/conversation-one')));
+  const charlieDb = signedIn({ uid: 'charlie', email: 'charlie@bad-mergentheim.dhbw.de', email_verified: true });
+  await assertSucceeds(getDoc(doc(charlieDb, 'conversations/group-one')));
+  await assertSucceeds(getDoc(doc(bobDb, 'conversations/group-one/messages/group-message')));
+  await assertFails(getDoc(doc(aliceDb, 'conversations/group-one/messages/nonexistent')));
   await assertFails(getDoc(doc(aliceDb, 'conversations/path-id-mismatch')));
   await assertFails(getDoc(doc(bobDb, 'conversations/conversation-invalid-participant-id')));
   // A valid child message must not bypass validation of its malformed parent.
