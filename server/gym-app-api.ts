@@ -21,6 +21,7 @@ export interface CommunityConversationWrite {
   participantIds: string[];
   participantNames: Record<string, string>;
   createdAt: string;
+  title?: string;
 }
 
 export interface CommunityConversationDto {
@@ -31,6 +32,7 @@ export interface CommunityConversationDto {
   lastMessageText?: string;
   lastMessageAt?: string;
   lastSenderId?: string;
+  title?: string;
 }
 
 export interface CommunityChatMessageDto {
