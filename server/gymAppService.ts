@@ -206,12 +206,15 @@ export class GymAppService {
     return principalId;
   }
 
-  getOccupancy(rangeValue: unknown = '24h') {
+  getOccupancy(
+    rangeValue: unknown = '24h',
+    options: { cleanup?: boolean; recordSample?: boolean } = {},
+  ) {
     const timestamp = this.now();
     const refreshedAt = new Date(timestamp).toISOString();
-    this.cleanupExpiredData();
+    if (options.cleanup !== false) this.cleanupExpiredData();
     const count = this.repository.occupancy(refreshedAt);
-    this.repository.recordOccupancySample(refreshedAt, count);
+    if (options.recordSample !== false) this.repository.recordOccupancySample(refreshedAt, count);
     const range = typeof rangeValue === 'string' && rangeValue in OCCUPANCY_RANGES ? rangeValue : '24h';
     const from = new Date(timestamp - OCCUPANCY_RANGES[range]).toISOString();
     return {
@@ -259,14 +262,14 @@ export class GymAppService {
     return { startAt: normalizedStart, endAt, ...this.repository.availability(normalizedStart, endAt) };
   }
 
-  listBookingSlots(fromValue: unknown, toValue: unknown) {
+  listBookingSlots(fromValue: unknown, toValue: unknown, options: { cleanup?: boolean } = {}) {
     const now = this.now();
     const from = isDate(fromValue) ? new Date(Date.parse(fromValue)).toISOString() : new Date(now).toISOString();
     const to = isDate(toValue) ? new Date(Date.parse(toValue)).toISOString() : new Date(now + 30 * 86400_000).toISOString();
     if (Date.parse(to) <= Date.parse(from) || Date.parse(to) - Date.parse(from) > 90 * 86400_000) {
       throw new GymDomainError('booking window must be between 0 and 90 days', 400);
     }
-    this.cleanupExpiredData();
+    if (options.cleanup !== false) this.cleanupExpiredData();
     return {
       slots: this.repository.listBookingSlots(from, to),
       capacityConfigured: false,
