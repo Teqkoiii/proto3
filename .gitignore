@@ -6,3 +6,6 @@ coverage/
 *.log
 .env*
 !.env.example
+!.env.dhbw-test.local.example
+firebase-applet-config.dhbw-test.local.json
+/data/gym-app.sqlite3

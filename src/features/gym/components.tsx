@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
-import { Activity, CalendarDays, ChartNoAxesColumnIncreasing, Dumbbell, House, UserRound, Users } from 'lucide-react';
+import { CalendarDays, ChartNoAxesColumnIncreasing, Dumbbell, House, UserRound, Users } from 'lucide-react';
+import gymLogoUrl from '../../assets/dhbw-gym-mark.svg';
 
 export type GymPage = 'dashboard' | 'calendar' | 'community' | 'training' | 'progress' | 'profile';
 
@@ -22,7 +23,7 @@ export function AppFrame({ page, onNavigate, headerActions, children }: {
     <div className="gym-app">
       <header className="gym-header">
         <button type="button" className="gym-brand" onClick={() => onNavigate('dashboard')} aria-label="DHBW Gym Hub – Übersicht">
-          <span className="gym-brand-mark"><Activity size={18} strokeWidth={2.5} aria-hidden="true" /></span>
+          <img className="gym-brand-mark" src={gymLogoUrl} alt="" />
           <span><strong>Gym Hub</strong><small>DHBW · Fitnessraum</small></span>
         </button>
         <nav className="gym-desktop-nav" aria-label="Hauptnavigation">

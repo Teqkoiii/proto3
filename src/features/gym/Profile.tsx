@@ -1,11 +1,8 @@
 import { useState } from 'react';
 import {
-  Check,
-  Copy,
   Eye,
   EyeOff,
   GraduationCap,
-  KeyRound,
   Lock,
   LogOut,
   Mail,
@@ -36,30 +33,32 @@ const AVAILABLE_TIMES = [
 
 export function Profile({
   session,
+  firebaseAuthenticated,
   profile,
   online,
   busy,
   error,
-  onCreateRecoveryCode,
-  onRecover,
   onDeleteData,
   onSaveProfile,
   onRegister,
   onLogin,
+  onResendVerificationEmail,
   onLogout,
+  onLinkExisting,
 }: {
   session: GymSession | null;
+  firebaseAuthenticated: boolean;
   profile: CommunityProfile | null;
   online: boolean;
   busy: boolean;
   error: string | null;
-  onCreateRecoveryCode: () => Promise<string>;
-  onRecover: (code: string) => void;
   onDeleteData: () => void;
   onSaveProfile: (updated: Partial<CommunityProfile>) => Promise<void>;
   onRegister: (data: { email: string; password: string; firstName?: string; lastNameInitial?: string; courseOfStudy?: string }) => Promise<void>;
   onLogin: (email: string, password: string) => Promise<void>;
+  onResendVerificationEmail: (email: string, password: string) => Promise<void>;
   onLogout: () => Promise<void>;
+  onLinkExisting: (legacyPassword: string) => Promise<void>;
 }) {
   // Community profile states
   const [firstName, setFirstName] = useState(profile?.firstName ?? '');
@@ -76,15 +75,11 @@ export function Profile({
   const [authMode, setAuthMode] = useState<'view' | 'login' | 'register'>('view');
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
-  const [authFirstName, setAuthFirstName] = useState('');
-  const [authLastName, setAuthLastName] = useState('');
-  const [authStudy, setAuthStudy] = useState('');
   const [authBusy, setAuthBusy] = useState(false);
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
 
-  // Recovery states
-  const [recoveryCode, setRecoveryCode] = useState('');
-  const [restoreInput, setRestoreInput] = useState('');
-  const [copied, setCopied] = useState(false);
+  const [legacyPassword, setLegacyPassword] = useState('');
 
   const toggleGoal = (goal: string) => {
     setSelectedGoals((prev) =>
@@ -121,47 +116,41 @@ export function Profile({
   const handleAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthBusy(true);
+    setAuthError(null);
     try {
       if (authMode === 'register') {
         await onRegister({
           email: authEmail.trim(),
           password: authPassword,
-          firstName: authFirstName.trim(),
-          lastNameInitial: authLastName.trim().slice(0, 1),
-          courseOfStudy: authStudy.trim(),
         });
+        setAuthNotice('Bitte bestätige deine E-Mail-Adresse über den Firebase-Link in deinem Postfach. Danach kannst du dich anmelden.');
       } else {
         await onLogin(authEmail.trim(), authPassword);
+        setAuthNotice(null);
       }
       setAuthMode('view');
       setAuthEmail('');
       setAuthPassword('');
+    } catch (caught) {
+      setAuthError(authErrorMessage(caught));
     } finally {
       setAuthBusy(false);
     }
   };
 
-  const createCode = async () => {
+  const handleResendVerification = async () => {
+    setAuthBusy(true);
+    setAuthError(null);
+    setAuthNotice(null);
     try {
-      setRecoveryCode(await onCreateRecoveryCode());
-      setCopied(false);
-    } catch {
-      // handled
+      await onResendVerificationEmail(authEmail.trim(), authPassword);
+      setAuthNotice('Die Bestätigungs-E-Mail wurde erneut angefordert. Prüfe auch den Spam-Ordner.');
+      setAuthPassword('');
+    } catch (caught) {
+      setAuthError(authErrorMessage(caught));
+    } finally {
+      setAuthBusy(false);
     }
-  };
-
-  const copyCode = async () => {
-    try {
-      await navigator.clipboard.writeText(recoveryCode);
-      setCopied(true);
-    } catch {
-      setCopied(false);
-    }
-  };
-
-  const submitRecovery = (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    onRecover(restoreInput.trim());
   };
 
   return (
@@ -173,7 +162,9 @@ export function Profile({
       />
 
       {error && <InlineNotice tone="error">{error}</InlineNotice>}
+      {authError && <InlineNotice tone="error">{authError}</InlineNotice>}
       {profileSuccess && <InlineNotice tone="success">{profileSuccess}</InlineNotice>}
+      {authNotice && <InlineNotice tone="success">{authNotice}</InlineNotice>}
 
       <div className="profile-grid">
         {/* 1. Community Profile Form */}
@@ -280,7 +271,7 @@ export function Profile({
               <div className="toggle-info">
                 <div className="flex items-center gap-2">
                   {isPublicPresence ? (
-                    <Eye size={18} className="text-emerald-400" />
+                    <Eye size={18} className="text-red-400" />
                   ) : (
                     <EyeOff size={18} className="text-amber-400" />
                   )}
@@ -325,14 +316,14 @@ export function Profile({
 
           <SectionTitle title="DHBW Hochschul-Konto" />
 
-          {session?.identity === 'local-account' && (session as any).email ? (
+          {session?.identity === 'firebase-account' && session.email ? (
             <div className="account-status-box">
-              <div className="flex items-center gap-2 text-emerald-400 mb-2">
+              <div className="flex items-center gap-2 text-red-400 mb-2">
                 <ShieldCheck size={18} />
                 <span className="font-semibold text-sm">Verifizierte DHBW-E-Mail</span>
               </div>
               <p className="text-sm font-mono bg-slate-900 p-2.5 rounded-lg border border-slate-700">
-                {(session as any).email}
+                {session.email}
               </p>
               <p className="muted-copy text-xs mt-2">
                 Dein Profil ist sicher mit deiner Hochschul-E-Mail verknüpft.
@@ -340,7 +331,50 @@ export function Profile({
               <button
                 type="button"
                 className="button button-secondary full-width mt-4"
-                disabled={busy || !online}
+                disabled={busy}
+                onClick={onLogout}
+              >
+                <LogOut size={16} aria-hidden="true" />
+                <span>Abmelden</span>
+              </button>
+            </div>
+          ) : firebaseAuthenticated ? (
+            <div className="account-anon-box">
+              <p className="text-sm text-slate-300">
+                Dein DHBW-Konto ist angemeldet. Um ein vorhandenes App-Profil zu übernehmen, bestätige es
+                mit dem bisherigen Passwort. Eine Übereinstimmung der E-Mail-Adresse allein reicht nicht aus.
+              </p>
+              <form
+                className="stack-form mt-3"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void onLinkExisting(legacyPassword);
+                }}
+              >
+                <Field label="Bisheriges App-Passwort">
+                  <input
+                    type="password"
+                    className="text-input"
+                    minLength={10}
+                    autoComplete="current-password"
+                    value={legacyPassword}
+                    onChange={(event) => setLegacyPassword(event.target.value)}
+                    placeholder="Passwort deines bisherigen Kontos"
+                    required
+                  />
+                </Field>
+                <button
+                  type="submit"
+                  className="button button-primary full-width"
+                  disabled={busy || legacyPassword.length < 10}
+                >
+                  Vorhandenes Profil verknüpfen
+                </button>
+              </form>
+              <button
+                type="button"
+                className="button button-secondary full-width mt-2"
+                disabled={busy}
                 onClick={onLogout}
               >
                 <LogOut size={16} aria-hidden="true" />
@@ -350,8 +384,8 @@ export function Profile({
           ) : authMode === 'view' ? (
             <div className="account-anon-box">
               <p className="text-sm text-slate-300">
-                Du nutzt die App aktuell mit einer temporären, anonymen Gerätesitzung. Registriere deine
-                offizielle DHBW-E-Mail, um dein Profil geräteübergreifend zu sichern.
+                Melde dich mit einer verifizierten DHBW-E-Mail-Adresse an. Bestehende Profile werden nur nach
+                Nachweis des bisherigen Passworts oder der vorherigen Gerätesitzung übernommen.
               </p>
               <div className="flex gap-2 mt-4">
                 <button
@@ -381,7 +415,10 @@ export function Profile({
                 <button
                   type="button"
                   className="text-xs text-slate-400 hover:text-white"
-                  onClick={() => setAuthMode(authMode === 'register' ? 'login' : 'register')}
+                  onClick={() => {
+                    setAuthMode(authMode === 'register' ? 'login' : 'register');
+                    setAuthError(null);
+                  }}
                 >
                   {authMode === 'register' ? 'Schon registriert? Anmelden' : 'Neu hier? Registrieren'}
                 </button>
@@ -410,40 +447,6 @@ export function Profile({
                 />
               </Field>
 
-              {authMode === 'register' && (
-                <>
-                  <div className="grid grid-cols-2 gap-2">
-                    <Field label="Vorname">
-                      <input
-                        type="text"
-                        className="text-input"
-                        placeholder="Max"
-                        value={authFirstName}
-                        onChange={(e) => setAuthFirstName(e.target.value)}
-                      />
-                    </Field>
-                    <Field label="Nachname">
-                      <input
-                        type="text"
-                        className="text-input"
-                        placeholder="Mustermann"
-                        value={authLastName}
-                        onChange={(e) => setAuthLastName(e.target.value)}
-                      />
-                    </Field>
-                  </div>
-                  <Field label="Studiengang">
-                    <input
-                      type="text"
-                      className="text-input"
-                      placeholder="Wirtschaftsinformatik"
-                      value={authStudy}
-                      onChange={(e) => setAuthStudy(e.target.value)}
-                    />
-                  </Field>
-                </>
-              )}
-
               <div className="flex gap-2 mt-2">
                 <button
                   type="button"
@@ -455,7 +458,7 @@ export function Profile({
                 <button
                   type="submit"
                   className="button button-primary flex-1"
-                  disabled={authBusy || !online}
+                  disabled={authBusy}
                 >
                   {authBusy
                     ? 'Wird ausgeführt...'
@@ -464,67 +467,19 @@ export function Profile({
                     : 'Anmelden'}
                 </button>
               </div>
+              {authMode === 'login' && (
+                <button
+                  type="button"
+                  className="text-action mt-2"
+                  disabled={authBusy || !authEmail.trim() || !authPassword}
+                  onClick={() => void handleResendVerification()}
+                >
+                  {authBusy ? 'Wird ausgeführt...' : 'Bestätigungs-E-Mail erneut senden'}
+                </button>
+              )}
             </form>
           )}
 
-          {/* Recovery Code Section */}
-          <div className="pt-4 mt-4 border-t border-slate-800">
-            <h3 className="sub-heading flex items-center gap-2">
-              <KeyRound size={16} /> Wiederherstellungscode
-            </h3>
-            <p className="muted-copy text-xs">
-              Alternativ kannst du einen Einmal-Code erzeugen, um deine Gerätesitzung ohne Passwort auf ein
-              neues Handy zu übertragen.
-            </p>
-            {!session?.recoveryConfigured && (
-              <button
-                type="button"
-                className="button button-secondary mt-2"
-                disabled={!online || busy}
-                onClick={() => void createCode()}
-              >
-                Einmal-Code erstellen
-              </button>
-            )}
-            {session?.recoveryConfigured && !recoveryCode && (
-              <InlineNotice tone="success">
-                Ein Wiederherstellungscode ist eingerichtet. Bewahre ihn sicher auf.
-              </InlineNotice>
-            )}
-            {recoveryCode && (
-              <div className="recovery-code-panel mt-2">
-                <p className="text-xs text-amber-300">
-                  Wird nur jetzt angezeigt! Speichere den Code sicher:
-                </p>
-                <code className="text-xs">{recoveryCode}</code>
-                <button type="button" className="button button-secondary compact-button" onClick={() => void copyCode()}>
-                  {copied ? <Check size={14} /> : <Copy size={14} />}
-                  <span>{copied ? 'Kopiert' : 'Code kopieren'}</span>
-                </button>
-              </div>
-            )}
-
-            <form className="stack-form recovery-form mt-3" onSubmit={submitRecovery}>
-              <Field label="Vorhandenen Code eingeben">
-                <input
-                  className="text-input"
-                  value={restoreInput}
-                  onChange={(event) => setRestoreInput(event.target.value)}
-                  autoComplete="off"
-                  spellCheck={false}
-                  placeholder="Code einfügen"
-                  required
-                />
-              </Field>
-              <button
-                type="submit"
-                className="button button-primary compact-button"
-                disabled={!online || busy || restoreInput.trim().length < 20}
-              >
-                Code anwenden
-              </button>
-            </form>
-          </div>
         </section>
 
         {/* 3. Privacy & DSGVO */}
@@ -556,4 +511,19 @@ export function Profile({
       </div>
     </>
   );
+}
+
+function authErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    const code = 'code' in error && typeof error.code === 'string' ? error.code : '';
+    if (code === 'auth/email-already-in-use') return 'Für diese E-Mail-Adresse gibt es bereits ein Konto. Melde dich an.';
+    if (code === 'auth/invalid-credential' || code === 'auth/wrong-password' || code === 'auth/user-not-found') {
+      return 'E-Mail-Adresse oder Passwort ist nicht korrekt.';
+    }
+    if (code === 'auth/weak-password') return 'Das Passwort ist zu schwach. Verwende ein längeres Passwort.';
+    if (code === 'auth/invalid-email') return 'Bitte gib eine gültige E-Mail-Adresse ein.';
+    if (code === 'auth/network-request-failed') return 'Der Authentifizierungsdienst ist nicht erreichbar. Bitte versuche es erneut.';
+    return error.message;
+  }
+  return 'Die Anfrage ist fehlgeschlagen. Bitte versuche es erneut.';
 }

@@ -1,20 +1,43 @@
 import express, { type NextFunction, type Request, type Response } from 'express';
 import type { DatabaseSync } from 'node:sqlite';
+import { verifyFirebaseIdToken, type VerifiedFirebaseIdentity } from './firebaseAuth.ts';
 import { GymAppRepository } from './gymAppRepository.ts';
-import { GymAppService, GymDomainError } from './gymAppService.ts';
+import { GymAppService, GymDomainError, isDhbwEmail } from './gymAppService.ts';
 
 const COOKIE_NAME = 'gym_app_session';
+
+export interface PartnerNotificationWrite {
+  recipientUid: string;
+  senderUid: string;
+  type: 'partner_request' | 'partner_accepted';
+  title: string;
+  message: string;
+  resourceId: string;
+  createdAt: string;
+}
+
+export interface CommunityConversationWrite {
+  id: string;
+  participantIds: string[];
+  participantNames: Record<string, string>;
+  createdAt: string;
+}
+
+export type PartnerNotificationStatus = 'sent' | 'unavailable' | 'failed';
 
 interface GymApiOptions {
   secureCookies?: boolean;
   allowedOrigins?: string[];
   maxCheckInHours?: number;
   now?: () => number;
-  makeToken?: () => string;
+  firebaseTokenVerifier?: (token: string) => Promise<VerifiedFirebaseIdentity>;
+  partnerNotificationWriter?: (notification: PartnerNotificationWrite) => Promise<void>;
+  communityConversationWriter?: (conversation: CommunityConversationWrite) => Promise<void>;
 }
 
 interface GymSessionRequest extends Request {
   principalId?: string;
+  firebaseIdentity?: VerifiedFirebaseIdentity;
 }
 
 function getCookie(request: Request, name: string): string | undefined {
@@ -29,12 +52,7 @@ function getCookie(request: Request, name: string): string | undefined {
   return undefined;
 }
 
-function setSessionCookie(response: Response, token: string, maxAgeSeconds: number, secure: boolean, crossOriginCookies: boolean): void {
-  const sameSite = crossOriginCookies ? 'None' : 'Strict';
-  response.setHeader('Set-Cookie', `${COOKIE_NAME}=${token}; HttpOnly; SameSite=${sameSite}; Path=/; Max-Age=${maxAgeSeconds}${secure ? '; Secure' : ''}`);
-}
-
-function clearSessionCookie(response: Response, secure: boolean, crossOriginCookies: boolean): void {
+function clearLegacySessionCookie(response: Response, secure: boolean, crossOriginCookies: boolean): void {
   const sameSite = crossOriginCookies ? 'None' : 'Strict';
   response.setHeader('Set-Cookie', `${COOKIE_NAME}=; HttpOnly; SameSite=${sameSite}; Path=/; Max-Age=0${secure ? '; Secure' : ''}`);
 }
@@ -42,6 +60,12 @@ function clearSessionCookie(response: Response, secure: boolean, crossOriginCook
 function asyncRoute(handler: (request: GymSessionRequest, response: Response) => Promise<void>) {
   return (request: GymSessionRequest, response: Response, next: NextFunction) => {
     handler(request, response).catch(next);
+  };
+}
+
+function asyncMiddleware(handler: (request: GymSessionRequest, response: Response, next: NextFunction) => Promise<void>) {
+  return (request: GymSessionRequest, response: Response, next: NextFunction) => {
+    handler(request, response, next).catch(next);
   };
 }
 
@@ -53,8 +77,37 @@ export function createGymAppApi(database: DatabaseSync, options: GymApiOptions =
   const service = new GymAppService(new GymAppRepository(database), {
     maxCheckInHours: options.maxCheckInHours ?? 8,
     now: options.now,
-    makeToken: options.makeToken,
   });
+  const verifyToken = options.firebaseTokenVerifier ?? verifyFirebaseIdToken;
+  const deliverPartnerNotification = async (
+    actorPrincipalId: string,
+    actorUid: string,
+    recipientPrincipalId: string,
+    notification: Omit<PartnerNotificationWrite, 'recipientUid' | 'senderUid' | 'createdAt'>,
+  ): Promise<PartnerNotificationStatus> => {
+    const senderUid = service.getFirebaseUidForPrincipal(actorPrincipalId);
+    const recipientUid = service.getFirebaseUidForPrincipal(recipientPrincipalId);
+    if (!options.partnerNotificationWriter || !recipientUid) return 'unavailable';
+    if (!senderUid || senderUid !== actorUid) {
+      console.error('[Community notification] Partner notification sender mapping is inconsistent');
+      return 'failed';
+    }
+    try {
+      await options.partnerNotificationWriter({
+        ...notification,
+        recipientUid,
+        senderUid,
+        createdAt: new Date(options.now?.() ?? Date.now()).toISOString(),
+      });
+      return 'sent';
+    } catch (error) {
+      console.error('[Community notification] Partner notification delivery failed', {
+        type: notification.type,
+        errorType: error instanceof Error ? error.name : 'unknown',
+      });
+      return 'failed';
+    }
+  };
 
   const sampleOccupancy = () => {
     try {
@@ -107,7 +160,7 @@ export function createGymAppApi(database: DatabaseSync, options: GymApiOptions =
     if (request.method === 'OPTIONS') {
       if (!origin || (sameOrigin || allowedOrigins.has(origin))) {
         response.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-        response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+        response.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
         response.status(204).end();
       } else {
         response.status(403).end();
@@ -117,37 +170,92 @@ export function createGymAppApi(database: DatabaseSync, options: GymApiOptions =
     next();
   });
 
-  const requireSession = (request: GymSessionRequest, response: Response, next: NextFunction) => {
-    const principalId = service.resolvePrincipal(getCookie(request, COOKIE_NAME));
-    if (!principalId) {
-      response.status(401).json({ error: 'app session required' });
-      return;
+  const getVerifiedIdentity = async (request: GymSessionRequest, response: Response): Promise<VerifiedFirebaseIdentity | undefined> => {
+    const authorization = request.get('Authorization');
+    const match = authorization?.match(/^Bearer ([^\s]+)$/i);
+    if (!match) {
+      response.status(401).json({ error: 'Firebase bearer token required' });
+      return undefined;
     }
-    request.principalId = principalId;
-    next();
+
+    let identity: VerifiedFirebaseIdentity;
+    try {
+      identity = await verifyToken(match[1] ?? '');
+    } catch {
+      response.status(401).json({ error: 'Firebase bearer token is invalid or revoked' });
+      return undefined;
+    }
+    if (!identity || typeof identity.uid !== 'string' || identity.uid.trim().length === 0 ||
+        identity.uid.length > 255 || typeof identity.emailVerified !== 'boolean' ||
+        (identity.email !== null && typeof identity.email !== 'string')) {
+      response.status(401).json({ error: 'Firebase identity is invalid' });
+      return undefined;
+    }
+    if (!identity.emailVerified) {
+      response.status(403).json({ error: 'verified DHBW email address required' });
+      return undefined;
+    }
+    if (!identity.email || !isDhbwEmail(identity.email)) {
+      response.status(403).json({ error: 'DHBW email address required' });
+      return undefined;
+    }
+
+    return identity;
   };
 
-  app.get('/api/gym/session', (request, response) => {
-    const opened = service.openSession(getCookie(request, COOKIE_NAME));
-    setSessionCookie(response, opened.token, opened.maxAgeSeconds, secureCookies, crossOriginCookies);
-    response.json(service.getSession(opened.principalId));
+  const requireFirebaseIdentity = asyncMiddleware(async (request, response, next) => {
+    const identity = await getVerifiedIdentity(request, response);
+    if (!identity) return;
+    request.firebaseIdentity = identity;
+    next();
   });
 
-  app.post('/api/gym/register', asyncRoute(async (request, response) => {
-    const opened = await service.register(getCookie(request, COOKIE_NAME), request.body);
-    setSessionCookie(response, opened.token, opened.maxAgeSeconds, secureCookies, crossOriginCookies);
-    response.status(201).json(service.getSession(opened.principalId));
+  const requireSession = asyncMiddleware(async (request, response, next) => {
+    const identity = request.firebaseIdentity ?? await getVerifiedIdentity(request, response);
+    if (!identity) return;
+    request.firebaseIdentity = identity;
+    request.principalId = await service.resolveFirebasePrincipal(identity);
+    next();
+  });
+
+  app.post('/api/gym/auth/link', requireFirebaseIdentity, asyncRoute(async (request, response) => {
+    const identity = request.firebaseIdentity;
+    if (!identity) {
+      response.status(401).json({ error: 'Firebase bearer token required' });
+      return;
+    }
+    const body = typeof request.body === 'object' && request.body !== null
+      ? request.body as Record<string, unknown>
+      : {};
+    const legacySessionToken = getCookie(request, COOKIE_NAME);
+    const legacySessionPrincipal = legacySessionToken
+      ? service.resolvePrincipal(legacySessionToken)
+      : undefined;
+    const principalId = await service.resolveFirebasePrincipal(
+      identity,
+      legacySessionToken,
+      body.legacyPassword,
+    );
+    service.retireLegacySessions(principalId);
+    if (legacySessionToken && legacySessionPrincipal === principalId && !service.resolvePrincipal(legacySessionToken)) {
+      clearLegacySessionCookie(response, secureCookies, crossOriginCookies);
+    }
+    response.json(service.getSession(principalId, identity.email));
   }));
 
-  app.post('/api/gym/login', asyncRoute(async (request, response) => {
-    const opened = await service.login(request.body, request.ip || 'unknown');
-    setSessionCookie(response, opened.token, opened.maxAgeSeconds, secureCookies, crossOriginCookies);
-    response.json(service.getSession(opened.principalId));
-  }));
+  app.get('/api/gym/session', requireFirebaseIdentity, requireSession, (request: GymSessionRequest, response) => {
+    response.json(service.getSession(request.principalId!, request.firebaseIdentity?.email));
+  });
 
-  app.post('/api/gym/logout', (request, response) => {
-    service.logout(getCookie(request, COOKIE_NAME));
-    clearSessionCookie(response, secureCookies, crossOriginCookies);
+  app.post(['/api/gym/register', '/api/gym/login'], (_request, response) => {
+    response.status(410).json({ error: 'use Firebase Authentication' });
+  });
+
+  app.post('/api/gym/logout', requireSession, (request: GymSessionRequest, response) => {
+    const legacySessionToken = getCookie(request, COOKIE_NAME);
+    if (legacySessionToken && service.consumeLegacySession(legacySessionToken, request.principalId!)) {
+      clearLegacySessionCookie(response, secureCookies, crossOriginCookies);
+    }
     response.status(204).end();
   });
 
@@ -185,17 +293,63 @@ export function createGymAppApi(database: DatabaseSync, options: GymApiOptions =
     response.json({ members: service.listCommunityMembers(request.principalId!) });
   });
 
+  app.post('/api/gym/community/conversations', requireSession, asyncRoute(async (request, response) => {
+    if (!options.communityConversationWriter) {
+      throw new GymDomainError('community chat is unavailable', 503);
+    }
+    const conversation = service.getCommunityConversation(request.principalId!, request.body);
+    const { otherParticipantUid, ...conversationWrite } = conversation;
+    await options.communityConversationWriter(conversationWrite);
+    response.json({
+      conversationId: conversation.id,
+      otherParticipantUid,
+    });
+  }));
+
   app.get('/api/gym/community/partner-requests', requireSession, (request: GymSessionRequest, response) => {
     response.json({ requests: service.listPartnerRequests(request.principalId!) });
   });
 
-  app.post('/api/gym/community/partner-requests', requireSession, (request: GymSessionRequest, response) => {
-    response.status(201).json(service.createPartnerRequest(request.principalId!, request.body));
-  });
+  app.post('/api/gym/community/partner-requests', requireSession, asyncRoute(async (request, response) => {
+    const principalId = request.principalId!;
+    const firebaseUid = request.firebaseIdentity!.uid;
+    const result = service.createPartnerRequest(principalId, request.body);
+    const context = service.getPartnerRequestNotificationContext(principalId, result.id);
+    const notificationStatus = await deliverPartnerNotification(
+      principalId,
+      firebaseUid,
+      context.receiverId,
+      {
+        type: 'partner_request',
+        title: 'Neue Partner-Anfrage!',
+        message: `${context.senderName} möchte mit dir im DHBW Gym trainieren.`,
+        resourceId: context.id,
+      },
+    );
+    response.status(201).json({ ...result, notificationStatus });
+  }));
 
-  app.put('/api/gym/community/partner-requests/:id', requireSession, (request: GymSessionRequest, response) => {
-    response.json(service.updatePartnerRequestStatus(request.principalId!, request.params.id ?? '', request.body));
-  });
+  app.put('/api/gym/community/partner-requests/:id', requireSession, asyncRoute(async (request, response) => {
+    const principalId = request.principalId!;
+    const firebaseUid = request.firebaseIdentity!.uid;
+    const result = service.updatePartnerRequestStatus(principalId, request.params.id ?? '', request.body);
+    let notificationStatus: PartnerNotificationStatus = 'unavailable';
+    if (result.status === 'accepted') {
+      const context = service.getPartnerRequestNotificationContext(principalId, result.id);
+      notificationStatus = await deliverPartnerNotification(
+        principalId,
+        firebaseUid,
+        context.senderId,
+        {
+          type: 'partner_accepted',
+          title: 'Partner-Anfrage angenommen!',
+          message: `${context.receiverName} hat deine Anfrage angenommen. Schreib direkt eine Nachricht im Chat!`,
+          resourceId: context.id,
+        },
+      );
+    }
+    response.json({ ...result, notificationStatus });
+  }));
 
   app.get('/api/gym/my/bookings', requireSession, (request: GymSessionRequest, response) => {
     response.json({ bookings: service.listMyBookings(request.principalId!) });
@@ -258,14 +412,8 @@ export function createGymAppApi(database: DatabaseSync, options: GymApiOptions =
     response.json(service.setWeeklyGoal(request.principalId!, request.body));
   });
 
-  app.post('/api/gym/profile/recovery-code', requireSession, (request: GymSessionRequest, response) => {
-    response.json(service.issueRecoveryCode(request.principalId!));
-  });
-
-  app.post('/api/gym/profile/recover', (request, response) => {
-    const recovered = service.recoverProfile(request.body, request.ip || 'unknown');
-    setSessionCookie(response, recovered.token, recovered.maxAgeSeconds, secureCookies, crossOriginCookies);
-    response.json({ recovered: true, identity: service.getSession(recovered.principalId).identity });
+  app.post('/api/gym/profile/recover', requireFirebaseIdentity, requireSession, (_request, response) => {
+    response.status(410).json({ error: 'recovery codes cannot be used to sign in; use Firebase Authentication' });
   });
 
   app.delete('/api/gym/my/data', requireSession, (request: GymSessionRequest, response) => {
@@ -287,4 +435,3 @@ export function createGymAppApi(database: DatabaseSync, options: GymApiOptions =
 
   return app;
 }
-

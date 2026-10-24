@@ -567,7 +567,7 @@ export function Calendar({
           <div className="week-day-inspector">
             <div className="inspector-header">
               <div className="inspector-date-title">
-                <CalendarDays size={20} className="text-emerald-400" aria-hidden="true" />
+                <CalendarDays size={20} className="text-red-400" aria-hidden="true" />
                 <h3>
                   Tagesansicht: {formatDate(selectedDay.toISOString())}
                   {isSameDay(selectedDay, new Date()) && ' (Heute)'}

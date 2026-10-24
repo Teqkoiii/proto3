@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   GymApiError,
   gymRepository,
@@ -16,7 +16,7 @@ import {
   type TrainingPartnerRequest,
   type WorkoutLog,
 } from '../../services/gymRepository';
-import { loginWithGoogle, subscribeToAuth } from '../../services/firebase';
+import { auth, subscribeToAuth } from '../../services/firebase';
 import {
   subscribeToConversations,
   subscribeToNotifications,
@@ -65,6 +65,9 @@ export function GymApp() {
 
   // Cloud Chat & Notifications states
   const [firebaseUserId, setFirebaseUserId] = useState<string>('');
+  const [firebaseAuthenticated, setFirebaseAuthenticated] = useState(false);
+  const firebaseUserIdRef = useRef('');
+  const [cloudDataUserId, setCloudDataUserId] = useState('');
   const [conversations, setConversations] = useState<CloudConversation[]>([]);
   const [notifications, setNotifications] = useState<CloudNotification[]>([]);
   const [localNotifications, setLocalNotifications] = useState<CloudNotification[]>([]);
@@ -72,13 +75,29 @@ export function GymApp() {
   const [activeChatPartner, setActiveChatPartner] = useState<CommunityMember | null>(null);
 
   const activeNotifications = useMemo(() => {
-    return firebaseUserId ? notifications : localNotifications;
-  }, [firebaseUserId, notifications, localNotifications]);
+    if (!firebaseUserId) return localNotifications;
+    return cloudDataUserId === firebaseUserId ? notifications : [];
+  }, [cloudDataUserId, firebaseUserId, notifications, localNotifications]);
+  const activeConversations = useMemo(
+    () => firebaseUserId && cloudDataUserId === firebaseUserId ? conversations : [],
+    [cloudDataUserId, conversations, firebaseUserId],
+  );
 
   // Initialize Firebase Auth & observe authentication state
   useEffect(() => {
     const unsub = subscribeToAuth((user) => {
-      setFirebaseUserId(user ? user.uid : '');
+      const nextUserId = user?.emailVerified ? user.uid : '';
+      if (firebaseUserIdRef.current !== nextUserId) {
+        firebaseUserIdRef.current = nextUserId;
+        setCloudDataUserId('');
+        setConversations([]);
+        setNotifications([]);
+        setLocalNotifications([]);
+        setIsChatOpen(false);
+        setActiveChatPartner(null);
+      }
+      setFirebaseAuthenticated(Boolean(user?.emailVerified));
+      setFirebaseUserId(nextUserId);
     });
     return () => unsub();
   }, []);
@@ -87,9 +106,13 @@ export function GymApp() {
   useEffect(() => {
     if (!firebaseUserId) return;
     const unsubConv = subscribeToConversations(firebaseUserId, (items) => {
+      if (firebaseUserIdRef.current !== firebaseUserId || auth.currentUser?.uid !== firebaseUserId) return;
+      setCloudDataUserId(firebaseUserId);
       setConversations(items);
     });
     const unsubNotif = subscribeToNotifications(firebaseUserId, (items) => {
+      if (firebaseUserIdRef.current !== firebaseUserId || auth.currentUser?.uid !== firebaseUserId) return;
+      setCloudDataUserId(firebaseUserId);
       setNotifications(items);
     });
     return () => {
@@ -99,7 +122,23 @@ export function GymApp() {
   }, [firebaseUserId]);
 
   const refreshAll = useCallback(async () => {
+    if (!firebaseUserId) {
+      setSession(null);
+      setBookings([]);
+      setVisits([]);
+      setWorkouts([]);
+      setCommunityProfile(null);
+      setCommunityMembers([]);
+      setPartnerRequests([]);
+      setCalendarEvents([]);
+      setActiveCheckIns([]);
+      setOnline(true);
+      setError(null);
+      setLoading(false);
+      return;
+    }
     try {
+      await gymRepository.linkFirebaseAccount();
       const currentSession = await gymRepository.getSession();
       const [
         currentOccupancy,
@@ -145,9 +184,10 @@ export function GymApp() {
     } finally {
       setLoading(false);
     }
-  }, [occupancyRange]);
+  }, [firebaseUserId, occupancyRange]);
 
   const refreshLivePresence = useCallback(async () => {
+    if (!firebaseUserId) return;
     try {
       const [current, currentSession, calData] = await Promise.all([
         gymRepository.getOccupancy(occupancyRange),
@@ -348,21 +388,13 @@ export function GymApp() {
       setBusy(true);
       setError(null);
       try {
-        await gymRepository.sendPartnerRequest(receiverId, note, proposedDate);
-
-        // Send real-time cloud notification to receiver
-        const myName = communityProfile?.firstName
-          ? `${communityProfile.firstName} ${communityProfile.lastNameInitial}.`
-          : 'Ein Kommilitone';
-        void sendNotification(receiverId, {
-          type: 'partner_request',
-          title: 'Neue Partner-Anfrage!',
-          message: `${myName} möchte mit dir im DHBW Gym trainieren.`,
-          linkUrl: '/community',
-        }).catch(() => undefined);
-
+        const result = await gymRepository.sendPartnerRequest(receiverId, note, proposedDate);
         await refreshAll();
-        setToast('Trainingspartner-Anfrage gesendet.');
+        setToast(result.notificationStatus === 'sent'
+          ? 'Trainingspartner-Anfrage gesendet.'
+          : result.notificationStatus === 'unavailable'
+          ? 'Trainingspartner-Anfrage gesendet. Eine Benachrichtigung ist derzeit nicht verfügbar.'
+          : 'Trainingspartner-Anfrage gesendet, die Benachrichtigung konnte aber nicht zugestellt werden.');
       } catch (caught) {
         setError(errorMessage(caught));
       } finally {
@@ -377,28 +409,15 @@ export function GymApp() {
       setBusy(true);
       setError(null);
       try {
-        await gymRepository.respondToPartnerRequest(id, status);
-
-        // If accepted, notify sender via Cloud Notification
-        if (status === 'accepted') {
-          const req = partnerRequests.find((r) => r.id === id);
-          if (req) {
-            const myName = communityProfile?.firstName
-              ? `${communityProfile.firstName} ${communityProfile.lastNameInitial}.`
-              : 'Dein Trainingspartner';
-            void sendNotification(req.senderId, {
-              type: 'partner_accepted',
-              title: 'Partner-Anfrage angenommen! 🎉',
-              message: `${myName} hat deine Anfrage angenommen. Schreib direkt eine Nachricht im Chat!`,
-              linkUrl: '/community',
-            }).catch(() => undefined);
-          }
-        }
-
+        const result = await gymRepository.respondToPartnerRequest(id, status);
         await refreshAll();
         setToast(
           status === 'accepted'
-            ? 'Partner-Anfrage angenommen!'
+            ? result.notificationStatus === 'sent'
+              ? 'Partner-Anfrage angenommen.'
+              : result.notificationStatus === 'unavailable'
+              ? 'Partner-Anfrage angenommen. Eine Benachrichtigung ist derzeit nicht verfügbar.'
+              : 'Partner-Anfrage angenommen, die Benachrichtigung konnte aber nicht zugestellt werden.'
             : status === 'declined'
             ? 'Anfrage abgelehnt.'
             : 'Anfrage zurückgezogen.',
@@ -424,6 +443,7 @@ export function GymApp() {
       const mockNotif: CloudNotification = {
         id: `notif_${Date.now()}`,
         userId: 'local_user',
+        senderId: 'local_user',
         type: 'slot_reminder',
         title: '⏰ Erinnerung: Gym-Slot in 30 Minuten!',
         message: 'Dein gebuchter Trainings-Slot im DHBW Gym Campus Bad Mergentheim beginnt gleich. Schnapp dir deine Trainingsschuhe!',
@@ -436,15 +456,6 @@ export function GymApp() {
     setToast('Slot-Erinnerung simuliert!');
   }, [firebaseUserId]);
 
-  const handleGoogleLogin = useCallback(async () => {
-    try {
-      await loginWithGoogle();
-      setToast('Erfolgreich mit Google angemeldet. Cloud-Sync aktiv!');
-    } catch (caught) {
-      console.warn('Google login failed or closed:', caught);
-    }
-  }, []);
-
   const handleOpenChat = useCallback((member: CommunityMember) => {
     setActiveChatPartner(member);
     setIsChatOpen(true);
@@ -456,16 +467,12 @@ export function GymApp() {
       setError(null);
       try {
         await gymRepository.registerWithDhbw(data);
-        await refreshAll();
-        setToast('DHBW-Konto erfolgreich registriert!');
-      } catch (caught) {
-        setError(errorMessage(caught));
-        throw caught;
+        setToast('Bitte bestätige deine E-Mail-Adresse über den Link in deinem Postfach. Danach kannst du dich anmelden.');
       } finally {
         setBusy(false);
       }
     },
-    [refreshAll],
+    [],
   );
 
   const handleLogin = useCallback(
@@ -476,9 +483,6 @@ export function GymApp() {
         await gymRepository.login(email, pass);
         await refreshAll();
         setToast('Erfolgreich angemeldet!');
-      } catch (caught) {
-        setError(errorMessage(caught));
-        throw caught;
       } finally {
         setBusy(false);
       }
@@ -486,40 +490,44 @@ export function GymApp() {
     [refreshAll],
   );
 
+  const handleResendVerificationEmail = useCallback(
+    async (email: string, password: string) => {
+      setBusy(true);
+      setError(null);
+      try {
+        await gymRepository.resendVerificationEmail(email, password);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [],
+  );
+
   const handleLogout = useCallback(async () => {
     setBusy(true);
     try {
       await gymRepository.logout();
-      await refreshAll();
       setToast('Abgemeldet.');
     } catch (caught) {
       setError(errorMessage(caught));
     } finally {
       setBusy(false);
     }
-  }, [refreshAll]);
+  }, []);
 
-  const handleIssueRecoveryCode = useCallback(async () => {
+  const handleLinkExisting = useCallback(async (legacyPassword: string) => {
+    setBusy(true);
     setError(null);
     try {
-      const code = await gymRepository.issueRecoveryCode();
+      await gymRepository.linkFirebaseAccount(legacyPassword);
       await refreshAll();
-      setToast('Wiederherstellungscode erstellt. Bewahre ihn sicher auf.');
-      return code;
+      setToast('Dein bestehendes Profil wurde sicher verknüpft.');
     } catch (caught) {
       setError(errorMessage(caught));
-      throw caught;
+    } finally {
+      setBusy(false);
     }
   }, [refreshAll]);
-
-  const handleRecover = useCallback(
-    (code: string) =>
-      runMutation(
-        () => gymRepository.recoverProfile(code),
-        'Profil wiederhergestellt. Deine Serverdaten sind wieder verfügbar.',
-      ),
-    [runMutation],
-  );
 
   const handleDeleteData = useCallback(() => {
     if (
@@ -552,7 +560,6 @@ export function GymApp() {
         <NotificationCenter
           notifications={activeNotifications}
           isCloudConnected={Boolean(firebaseUserId)}
-          onLoginWithGoogle={handleGoogleLogin}
           onMarkRead={(id) => {
             if (firebaseUserId) {
               void markNotificationAsRead(firebaseUserId, id);
@@ -589,10 +596,15 @@ export function GymApp() {
         />
       }
     >
-      {!online && (
+      {!online && firebaseUserId && (
         <InlineNotice tone="warning">
           Der Gym-Server ist nicht erreichbar. Angezeigte Daten können veraltet sein; Check-in,
           Reservierungen und Speichern sind derzeit deaktiviert.
+        </InlineNotice>
+      )}
+      {!firebaseUserId && (
+        <InlineNotice tone="warning">
+          Melde dich mit deinem verifizierten DHBW-Konto an, um auf dein Profil und deine Trainingsdaten zuzugreifen.
         </InlineNotice>
       )}
 
@@ -673,17 +685,18 @@ export function GymApp() {
       {page === 'profile' && (
         <Profile
           session={session}
+          firebaseAuthenticated={firebaseAuthenticated}
           profile={communityProfile}
           online={online}
           busy={busy}
           error={error}
-          onCreateRecoveryCode={handleIssueRecoveryCode}
-          onRecover={handleRecover}
           onDeleteData={handleDeleteData}
           onSaveProfile={handleSaveProfile}
           onRegister={handleRegister}
           onLogin={handleLogin}
+          onResendVerificationEmail={handleResendVerificationEmail}
           onLogout={handleLogout}
+          onLinkExisting={handleLinkExisting}
         />
       )}
 
@@ -697,8 +710,8 @@ export function GymApp() {
         >
           <MessageSquare size={17} />
           <span>Chat</span>
-          {conversations.length > 0 && (
-            <span className="badge-count">{conversations.length}</span>
+          {activeConversations.length > 0 && (
+            <span className="badge-count">{activeConversations.length}</span>
           )}
         </button>
       )}
@@ -714,9 +727,9 @@ export function GymApp() {
             : 'Du'
         }
         activePartner={activeChatPartner}
-        conversations={conversations}
+        conversations={activeConversations}
         onSelectPartner={setActiveChatPartner}
-        onLoginWithGoogle={handleGoogleLogin}
+        onNavigateToLogin={() => setPage('profile')}
       />
 
       <footer className="gym-footer">
@@ -734,9 +747,17 @@ export function GymApp() {
 function errorMessage(error: unknown): string {
   if (error instanceof GymApiError) {
     if (error.status === 0) return error.message;
+    if (error.status === 409 && error.message.includes('previous password')) {
+      return 'Ein bestehendes Profil mit dieser E-Mail benötigt zum Verknüpfen das bisherige App-Passwort.';
+    }
+    if (error.status === 409 && error.message.includes('already linked')) {
+      return 'Dieses Firebase-Konto oder Profil ist bereits mit einem anderen Konto verknüpft.';
+    }
     if (error.status === 409) return 'Diese Zeit hast du bereits geplant oder eine Anfrage existiert bereits.';
     if (error.status === 401)
-      return 'Deine Sitzung ist abgelaufen oder Zugangsdaten sind ungültig.';
+      return error.message === 'previous account password is incorrect'
+        ? 'Das bisherige App-Passwort ist nicht korrekt.'
+        : 'Deine Firebase-Anmeldung ist abgelaufen oder ungültig.';
     if (error.status === 429) return 'Zu viele Versuche. Bitte warte kurz und versuche es erneut.';
     if (error.status === 400) return error.message || 'Bitte prüfe die eingegebenen Daten.';
   }

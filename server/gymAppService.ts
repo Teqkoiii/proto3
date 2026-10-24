@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   GymAppRepository,
   type BookingAvailability,
@@ -8,9 +8,9 @@ import {
   type CommunityProfileRecord,
   type TrainingPartnerRequestRecord,
 } from './gymAppRepository.ts';
-import { hashPassword, verifyPasswordOrDummy } from './password.ts';
+import { verifyPasswordOrDummy } from './password.ts';
+import type { VerifiedFirebaseIdentity } from './firebaseAuth.ts';
 
-const SESSION_MAX_AGE_SECONDS = 365 * 24 * 60 * 60;
 const VISIT_RETENTION_DAYS = 90;
 const RESERVATION_DURATIONS = new Set([30, 60, 90, 120]);
 const OCCUPANCY_RANGES: Record<string, number> = {
@@ -20,15 +20,21 @@ const OCCUPANCY_RANGES: Record<string, number> = {
   '7d': 7 * 86400_000,
 };
 const EMAIL_PATTERN = /^[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}$/i;
+const DHBW_EMAIL_DOMAINS = new Set([
+  'bad-mergentheim.dhbw.de',
+  'badmergentheim.dhbw.de',
+  'dhbw-mannheim.de',
+  'dhbw-mosbach.de',
+  'dhbw-stuttgart.de',
+  'dhbw.de',
+  'heilbronn.dhbw.de',
+  'lehre.dhbw-mannheim.de',
+]);
 
 export function isDhbwEmail(email: string): boolean {
   const parts = email.toLowerCase().split('@');
   if (parts.length !== 2) return false;
-  const domain = parts[1];
-  if (!domain.endsWith('.de')) return false;
-  if (domain === 'dhbw.de' || domain.endsWith('.dhbw.de')) return true;
-  if (/^([a-z0-9\-]+\.)?dhbw-[a-z0-9\-]+\.de$/.test(domain)) return true;
-  return false;
+  return DHBW_EMAIL_DOMAINS.has(parts[1] ?? '');
 }
 
 export class GymDomainError extends Error {
@@ -60,29 +66,37 @@ function normalizeEmail(value: unknown): string | undefined {
   return email;
 }
 
-function validatePassword(value: unknown): string {
-  if (typeof value !== 'string' || value.length < 10 || value.length > 128) {
-    throw new GymDomainError('password must be between 10 and 128 characters', 400);
-  }
-  return value;
-}
-
 export class GymAppService {
-  private readonly recoveryAttempts = new Map<string, { count: number; resetsAt: number }>();
-  private readonly loginAttempts = new Map<string, { count: number; resetsAt: number }>();
   private readonly repository: GymAppRepository;
+  private readonly legacyLinkFailures = new Map<string, { count: number; resetsAt: number }>();
   private readonly options: {
     maxCheckInHours: number;
     now?: () => number;
-    makeToken?: () => string;
   };
+
+  private registerLegacyLinkAttempt(email: string): void {
+    const timestamp = this.now();
+    for (const [key, entry] of this.legacyLinkFailures) {
+      if (entry.resetsAt <= timestamp) this.legacyLinkFailures.delete(key);
+    }
+    const entry = this.legacyLinkFailures.get(email);
+    if (entry && entry.count >= 5 && entry.resetsAt > timestamp) {
+      throw new GymDomainError('too many profile-link attempts; try again later', 429);
+    }
+    if (!entry || entry.resetsAt <= timestamp) {
+      this.legacyLinkFailures.set(email, { count: 1, resetsAt: timestamp + 15 * 60_000 });
+      return;
+    }
+    // Reserve the attempt before awaiting password hashing so concurrent requests
+    // cannot all pass the limit check at once.
+    entry.count += 1;
+  }
 
   constructor(
     repository: GymAppRepository,
     options: {
       maxCheckInHours: number;
       now?: () => number;
-      makeToken?: () => string;
     },
   ) {
     this.repository = repository;
@@ -96,10 +110,6 @@ export class GymAppService {
     return this.options.now?.() ?? Date.now();
   }
 
-  private makeToken(): string {
-    return this.options.makeToken?.() ?? randomBytes(32).toString('hex');
-  }
-
   cleanupExpiredData(): void {
     const timestamp = this.now();
     this.repository.cleanupExpiredData(
@@ -109,47 +119,31 @@ export class GymAppService {
     );
   }
 
-  openSession(token?: string): { token: string; principalId: string; maxAgeSeconds: number } {
-    this.cleanupExpiredData();
-    const timestamp = this.now();
-    const nowIso = new Date(timestamp).toISOString();
-    if (token && /^[a-f0-9]{64}$/.test(token)) {
-      const sessionHash = hashToken(token);
-      const existing = this.repository.findSession(sessionHash, nowIso);
-      if (existing) {
-        this.repository.renewSession(sessionHash, new Date(timestamp + SESSION_MAX_AGE_SECONDS * 1000).toISOString());
-        return { token, principalId: existing.principalId, maxAgeSeconds: SESSION_MAX_AGE_SECONDS };
-      }
-    }
-
-    const nextToken = this.makeToken();
-    const principalId = this.repository.createAnonymousPrincipal(
-      hashToken(nextToken),
-      nowIso,
-      new Date(timestamp + SESSION_MAX_AGE_SECONDS * 1000).toISOString(),
-    );
-    return { token: nextToken, principalId, maxAgeSeconds: SESSION_MAX_AGE_SECONDS };
-  }
-
   resolvePrincipal(token: string | undefined): string | undefined {
     if (!token || !/^[a-f0-9]{64}$/.test(token)) return undefined;
     this.cleanupExpiredData();
     return this.repository.findSession(hashToken(token), new Date(this.now()).toISOString())?.principalId;
   }
 
-  logout(token: string | undefined): void {
-    if (!token || !/^[a-f0-9]{64}$/.test(token)) return;
-    this.repository.deleteSession(hashToken(token));
+  consumeLegacySession(token: string, principalId: string): boolean {
+    return this.repository.consumeSessionForPrincipal(
+      hashToken(token),
+      principalId,
+      new Date(this.now()).toISOString(),
+    );
   }
 
-  getSession(principalId: string) {
+  retireLegacySessions(principalId: string): void {
+    this.repository.deleteSessionsForPrincipal(principalId);
+  }
+
+  getSession(principalId: string, email: string | null = null) {
     const timestamp = this.now();
     const checkIn = this.repository.getCheckIn(principalId, new Date(timestamp).toISOString());
     const account = this.repository.getLocalAccount(principalId);
     return {
-      identity: account ? 'local-account' as const : 'anonymous-app-profile' as const,
-      email: account?.email ?? null,
-      recoveryConfigured: this.repository.hasRecoveryToken(principalId),
+      identity: 'firebase-account' as const,
+      email: email ?? account?.email ?? null,
       checkedInAt: checkIn?.checkedInAt ?? null,
       checkInExpiresAt: checkIn?.expiresAt ?? null,
       maxCheckInHours: this.options.maxCheckInHours,
@@ -157,94 +151,77 @@ export class GymAppService {
     };
   }
 
-  async register(currentToken: string | undefined, input: unknown): Promise<{ token: string; principalId: string; maxAgeSeconds: number }> {
-    const email = normalizeEmail(isRecord(input) ? input.email : undefined);
-    if (!email) throw new GymDomainError('a valid email address is required', 400);
-    if (!isDhbwEmail(email)) {
-      throw new GymDomainError('Nur offizielle DHBW-E-Mail-Adressen (z. B. @*.dhbw.de oder @dhbw-*.de) sind zugelassen', 400);
-    }
-    const password = validatePassword(isRecord(input) ? input.password : undefined);
-    if (this.repository.emailTaken(email)) throw new GymDomainError('an account with this email already exists', 409);
-
-    const timestamp = this.now();
-    const nowIso = new Date(timestamp).toISOString();
-    let principalId = this.resolvePrincipal(currentToken);
-    if (principalId && this.repository.hasLocalCredentials(principalId)) {
-      throw new GymDomainError('this session already has an account', 409);
-    }
-    const passwordHash = await hashPassword(password);
-    let sessionResult: { token: string; principalId: string; maxAgeSeconds: number };
-    if (!principalId) {
-      sessionResult = this.openSession();
-      principalId = sessionResult.principalId;
-      this.saveLocalCredentials(principalId, email, passwordHash, nowIso);
-    } else {
-      this.saveLocalCredentials(principalId, email, passwordHash, nowIso);
-      sessionResult = this.openSession(currentToken);
+  async resolveFirebasePrincipal(
+    identity: VerifiedFirebaseIdentity,
+    legacySessionToken?: string,
+    legacyPassword?: unknown,
+  ): Promise<string> {
+    if (!identity.uid || identity.uid.length > 255 || !identity.email || !identity.emailVerified ||
+        !isDhbwEmail(identity.email)) {
+      throw new GymDomainError('a verified DHBW Firebase account is required', 403);
     }
 
-    // Initialize community profile if provided or from email
-    let firstName = 'DHBW';
-    let lastNameInitial = 'S';
-    if (isRecord(input) && typeof input.firstName === 'string' && input.firstName.trim()) {
-      firstName = input.firstName.trim().slice(0, 40);
-      if (typeof input.lastNameInitial === 'string' && input.lastNameInitial.trim()) {
-        lastNameInitial = input.lastNameInitial.trim().slice(0, 1).toUpperCase();
+    const existingPrincipal = this.repository.findPrincipalForVerifiedAccount('firebase', identity.uid);
+    if (existingPrincipal) {
+      if (legacySessionToken && this.resolvePrincipal(legacySessionToken) === existingPrincipal) {
+        this.consumeLegacySession(legacySessionToken, existingPrincipal);
       }
+      return existingPrincipal;
+    }
+
+    const email = normalizeEmail(identity.email);
+    if (!email) throw new GymDomainError('a valid verified email address is required', 403);
+
+    const credentials = this.repository.findLocalCredentialsByEmail(email);
+    const sessionPrincipal = this.resolvePrincipal(legacySessionToken);
+    let principalId: string;
+    let sessionProofToken: string | undefined;
+
+    if (credentials) {
+      const sessionProvesAccount = sessionPrincipal === credentials.principalId;
+      if (sessionProvesAccount) sessionProofToken = legacySessionToken;
+      if (!sessionProvesAccount) {
+        if (legacyPassword === undefined) {
+          throw new GymDomainError('existing profile requires its previous password to link', 409);
+        }
+        this.registerLegacyLinkAttempt(email);
+        if (typeof legacyPassword !== 'string' || legacyPassword.length < 10 || legacyPassword.length > 128 ||
+            !await verifyPasswordOrDummy(legacyPassword, credentials.passwordHash)) {
+          throw new GymDomainError('previous account password is incorrect', 401);
+        }
+        this.legacyLinkFailures.delete(email);
+      }
+      principalId = credentials.principalId;
+    } else if (sessionPrincipal) {
+      const sessionEmail = this.repository.getLocalAccount(sessionPrincipal)?.email;
+      if (sessionEmail && sessionEmail !== email) {
+        throw new GymDomainError('the previous session belongs to a different account', 403);
+      }
+      principalId = sessionPrincipal;
+      sessionProofToken = legacySessionToken;
     } else {
-      const emailPrefix = email.split('@')[0];
-      const parts = emailPrefix.split('.');
-      if (parts[0]) firstName = parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
-      if (parts[1]) lastNameInitial = parts[1].charAt(0).toUpperCase();
+      return this.repository.createOrGetFirebasePrincipal(identity.uid, new Date(this.now()).toISOString());
     }
 
-    const trainingGoals = isRecord(input) && Array.isArray(input.trainingGoals)
-      ? input.trainingGoals.filter((g): g is string => typeof g === 'string')
-      : ['Allgemeine Fitness & Cardio'];
-
-    const preferredTimes = isRecord(input) && Array.isArray(input.preferredTimes)
-      ? input.preferredTimes.filter((t): t is string => typeof t === 'string')
-      : ['Nachmittags (15:00 - 18:00)'];
-
-    const courseOfStudy = isRecord(input) && typeof input.courseOfStudy === 'string'
-      ? input.courseOfStudy.trim().slice(0, 80)
-      : 'Campus Bad Mergentheim';
-
-    this.repository.upsertCommunityProfile({
-      principalId,
-      firstName,
-      lastNameInitial,
-      courseOfStudy,
-      trainingGoals,
-      preferredTimes,
-      interests: ['Regelmäßige Gym-Buddies'],
-      bio: '',
-      isPublicPresence: true,
-      updatedAt: nowIso,
-    });
-
-    return sessionResult;
-  }
-
-  async login(input: unknown, rateLimitKey: string): Promise<{ token: string; principalId: string; maxAgeSeconds: number }> {
-    this.enforceRateLimit(this.loginAttempts, rateLimitKey, 8, 5 * 60_000);
-    const email = normalizeEmail(isRecord(input) ? input.email : undefined);
-    const password = typeof (isRecord(input) ? input.password : undefined) === 'string' ? String((input as { password: string }).password) : '';
-    const credentials = email ? this.repository.findLocalCredentialsByEmail(email) : undefined;
-    const valid = await verifyPasswordOrDummy(password, credentials?.passwordHash);
-    if (!email || password.length < 10 || password.length > 128 || !credentials || !valid) {
-      throw new GymDomainError('email or password is incorrect', 401);
+    try {
+      this.repository.linkAnonymousProfileToVerifiedAccount(
+        principalId,
+        'firebase',
+        identity.uid,
+        new Date(this.now()).toISOString(),
+        sessionProofToken ? hashToken(sessionProofToken) : undefined,
+      );
+    } catch (error) {
+      if (error instanceof Error && /legacy session is invalid or expired/i.test(error.message)) {
+        throw new GymDomainError('the previous app session expired; sign in again to link this profile', 401);
+      }
+      if (error instanceof Error && /already linked|already exists/i.test(error.message)) {
+        throw new GymDomainError('this Firebase account or profile is already linked elsewhere', 409);
+      }
+      throw error;
     }
-    this.loginAttempts.delete(rateLimitKey);
-    const timestamp = this.now();
-    const token = this.makeToken();
-    this.repository.createSession(
-      hashToken(token),
-      credentials.principalId,
-      new Date(timestamp).toISOString(),
-      new Date(timestamp + SESSION_MAX_AGE_SECONDS * 1000).toISOString(),
-    );
-    return { token, principalId: credentials.principalId, maxAgeSeconds: SESSION_MAX_AGE_SECONDS };
+
+    return principalId;
   }
 
   getOccupancy(rangeValue: unknown = '24h') {
@@ -473,6 +450,10 @@ export class GymAppService {
     if (receiverId === senderId) {
       throw new GymDomainError('cannot send a partner request to yourself', 400);
     }
+    const receiverProfile = this.repository.getCommunityProfile(receiverId);
+    if (!receiverProfile?.isPublicPresence) {
+      throw new GymDomainError('community member not found', 404);
+    }
     const note = typeof input.note === 'string' ? input.note.trim().slice(0, 200) : '';
     const proposedDate = isDate(input.proposedDate) ? new Date(Date.parse(input.proposedDate)).toISOString() : null;
     const timestamp = this.now();
@@ -493,6 +474,60 @@ export class GymAppService {
   listPartnerRequests(principalId: string) {
     this.cleanupExpiredData();
     return this.repository.listPartnerRequests(principalId);
+  }
+
+  getFirebaseUidForPrincipal(principalId: string): string | undefined {
+    return this.repository.findFirebaseUidForPrincipal(principalId);
+  }
+
+  getCommunityConversation(principalId: string, input: unknown) {
+    if (!isRecord(input) || typeof input.partnerPrincipalId !== 'string' || !input.partnerPrincipalId.trim()) {
+      throw new GymDomainError('partnerPrincipalId is required', 400);
+    }
+    const partnerPrincipalId = input.partnerPrincipalId.trim();
+    if (partnerPrincipalId === principalId) {
+      throw new GymDomainError('cannot start a conversation with yourself', 400);
+    }
+
+    const partnerProfile = this.repository.getCommunityProfile(partnerPrincipalId);
+    const isAcceptedPartner = this.repository.hasAcceptedPartnerRequestBetween(principalId, partnerPrincipalId);
+    if (!partnerProfile || (!partnerProfile.isPublicPresence && !isAcceptedPartner)) {
+      throw new GymDomainError('community member not found', 404);
+    }
+
+    const currentUid = this.repository.findFirebaseUidForPrincipal(principalId);
+    const partnerUid = this.repository.findFirebaseUidForPrincipal(partnerPrincipalId);
+    if (!currentUid || !partnerUid || currentUid === partnerUid) {
+      throw new GymDomainError('community member is not available for chat', 409);
+    }
+
+    const participantIds = [currentUid, partnerUid].sort();
+    const id = `conv_${createHash('sha256').update(JSON.stringify(participantIds)).digest('hex')}`;
+    const currentProfile = this.repository.getCommunityProfile(principalId);
+    const displayName = (profile: CommunityProfileRecord | undefined, fallback: string) => (
+      profile?.firstName
+        ? `${profile.firstName} ${profile.lastNameInitial ? `${profile.lastNameInitial}.` : ''}`.trim().slice(0, 60)
+        : fallback
+    );
+
+    return {
+      id,
+      participantIds,
+      participantNames: {
+        [currentUid]: displayName(currentProfile, 'DHBW Student'),
+        [partnerUid]: displayName(partnerProfile, 'DHBW Student'),
+      },
+      createdAt: new Date(this.now()).toISOString(),
+      otherParticipantUid: partnerUid,
+    };
+  }
+
+  getPartnerRequestNotificationContext(principalId: string, requestId: string) {
+    const request = this.repository.getPartnerRequestNotificationContext(requestId);
+    if (!request || (request.senderId !== principalId && request.receiverId !== principalId)) {
+      throw new GymDomainError('partner request not found', 404);
+    }
+    return request;
   }
 
   updatePartnerRequestStatus(principalId: string, id: string, actionInput: unknown) {
@@ -598,43 +633,8 @@ export class GymAppService {
     return { weeklySessions };
   }
 
-  issueRecoveryCode(principalId: string): { recoveryCode: string; oneTimeDisplay: true } {
-    const recoveryCode = randomBytes(32).toString('base64url');
-    this.repository.setRecoveryToken(principalId, hashToken(recoveryCode), new Date(this.now()).toISOString());
-    return { recoveryCode, oneTimeDisplay: true };
-  }
-
-  recoverProfile(input: unknown, rateLimitKey: string): { principalId: string; token: string; maxAgeSeconds: number } {
-    this.enforceRateLimit(this.recoveryAttempts, rateLimitKey, 5, 5 * 60_000);
-    const recoveryCode = isRecord(input) ? input.recoveryCode : undefined;
-    if (typeof recoveryCode !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(recoveryCode)) {
-      throw new GymDomainError('recovery code is invalid or has already been used', 401);
-    }
-    const token = this.makeToken();
-    const timestamp = this.now();
-    const principalId = this.repository.recoverPrincipal(
-      hashToken(recoveryCode),
-      hashToken(token),
-      new Date(timestamp).toISOString(),
-      new Date(timestamp + SESSION_MAX_AGE_SECONDS * 1000).toISOString(),
-    );
-    if (!principalId) throw new GymDomainError('recovery code is invalid or has already been used', 401);
-    return { principalId, token, maxAgeSeconds: SESSION_MAX_AGE_SECONDS };
-  }
-
   deletePersonalData(principalId: string): void {
     this.repository.deletePersonalData(principalId);
-  }
-
-  private saveLocalCredentials(principalId: string, email: string, passwordHash: string, nowIso: string): void {
-    try {
-      this.repository.createLocalCredentials(principalId, email, passwordHash, nowIso);
-    } catch (error) {
-      if (error instanceof Error && /UNIQUE constraint failed/i.test(error.message)) {
-        throw new GymDomainError('an account with this email already exists', 409);
-      }
-      throw error;
-    }
   }
 
   private parseBookingInput(input: unknown): { startMs: number; durationMinutes: number; title: string; entryType: 'planned' | 'reservation' } {
@@ -677,16 +677,5 @@ export class GymAppService {
       return { name: exercise.name.trim(), targetSets, targetReps, targetWeightKg };
     });
     return { id, name: input.name.trim(), notes: typeof input.notes === 'string' ? input.notes.trim() : '', exercises };
-  }
-
-  private enforceRateLimit(store: Map<string, { count: number; resetsAt: number }>, key: string, maxAttempts: number, windowMs: number): void {
-    const timestamp = this.now();
-    const attempt = store.get(key);
-    if (!attempt || attempt.resetsAt <= timestamp) {
-      store.set(key, { count: 1, resetsAt: timestamp + windowMs });
-      return;
-    }
-    attempt.count += 1;
-    if (attempt.count > maxAttempts) throw new GymDomainError('too many attempts; try again later', 429);
   }
 }

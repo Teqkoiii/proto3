@@ -11,13 +11,12 @@ import {
   X,
 } from 'lucide-react';
 import {
-  createOrGetConversation,
   sendChatMessage,
   subscribeToMessages,
   type CloudChatMessage,
   type CloudConversation,
 } from '../../services/communityChatService';
-import type { CommunityMember } from '../../services/gymRepository';
+import { gymRepository, type CommunityMember } from '../../services/gymRepository';
 
 const QUICK_PROMPTS = [
   'Bin in 10 Min da! 💪',
@@ -34,7 +33,7 @@ export function ChatDrawer({
   activePartner,
   conversations,
   onSelectPartner,
-  onLoginWithGoogle,
+  onNavigateToLogin,
 }: {
   isOpen: boolean;
   onClose: () => void;
@@ -43,9 +42,10 @@ export function ChatDrawer({
   activePartner: CommunityMember | null;
   conversations: CloudConversation[];
   onSelectPartner: (partner: CommunityMember | null) => void;
-  onLoginWithGoogle?: () => void;
+  onNavigateToLogin: () => void;
 }) {
   const [conversationId, setConversationId] = useState<string | null>(null);
+  const [otherParticipantUid, setOtherParticipantUid] = useState<string | undefined>();
   const [messages, setMessages] = useState<CloudChatMessage[]>([]);
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
@@ -56,23 +56,42 @@ export function ChatDrawer({
     let active = true;
     if (!activePartner || !currentUserId) {
       setConversationId(null);
+      setOtherParticipantUid(undefined);
       setMessages([]);
       return;
     }
 
-    const partnerName = `${activePartner.firstName} ${activePartner.lastNameInitial}.`.trim();
-    void createOrGetConversation(currentUserId, currentUserName, activePartner.id, partnerName).then(
-      (convId) => {
+    setConversationId(null);
+    setOtherParticipantUid(undefined);
+    setMessages([]);
+    const existing = conversations.find((conversation) => (
+      conversation.participantIds.includes(currentUserId) &&
+      conversation.participantIds.includes(activePartner.id)
+    ));
+    if (existing) {
+      setConversationId(existing.id);
+      setOtherParticipantUid(activePartner.id);
+    } else {
+      void gymRepository.createCommunityConversation(activePartner.id).then(
+        ({ conversationId: convId, otherParticipantUid: partnerUid }) => {
+          if (active) {
+            setConversationId(convId);
+            setOtherParticipantUid(partnerUid);
+          }
+        },
+      ).catch((error: unknown) => {
         if (active) {
-          setConversationId(convId);
+          console.error('Unable to open community chat', error);
+          setConversationId(null);
+          setOtherParticipantUid(undefined);
         }
-      },
-    );
+      });
+    }
 
     return () => {
       active = false;
     };
-  }, [activePartner, currentUserId, currentUserName]);
+  }, [activePartner, currentUserId]);
 
   // Subscribe to real-time messages
   useEffect(() => {
@@ -101,7 +120,7 @@ export function ChatDrawer({
         currentUserId,
         currentUserName,
         toSend.trim(),
-        activePartner?.id,
+        otherParticipantUid,
       );
       if (!customText) setText('');
     } finally {
@@ -165,17 +184,15 @@ export function ChatDrawer({
           <MessageSquare size={36} className="chat-login-icon" />
           <h4 className="chat-login-title">Live-Chat & Cloud-Sync</h4>
           <p className="chat-login-desc">
-            Melde dich mit deinem Google-Konto an, um in Echtzeit mit deinen Trainingspartnern am Campus Bad Mergentheim zu chatten.
+            Melde dich mit deinem verifizierten DHBW-Konto an, um in Echtzeit mit deinen Trainingspartnern am Campus Bad Mergentheim zu chatten.
           </p>
-          {onLoginWithGoogle && (
-            <button
-              type="button"
-              className="button button-primary compact-button mt-4"
-              onClick={onLoginWithGoogle}
-            >
-              Mit Google anmelden
-            </button>
-          )}
+          <button
+            type="button"
+            className="button button-primary compact-button mt-4"
+            onClick={onNavigateToLogin}
+          >
+            Zum DHBW-Login
+          </button>
         </div>
       ) : !activePartner ? (
         <div className="chat-conversations-list">

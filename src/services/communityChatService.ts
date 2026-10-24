@@ -1,7 +1,6 @@
 import {
   collection,
   doc,
-  getDoc,
   getDocs,
   onSnapshot,
   orderBy,
@@ -45,11 +44,14 @@ export interface CloudChatMessage {
 export interface CloudNotification {
   id: string;
   userId: string;
+  senderId: string;
   type: 'partner_request' | 'partner_accepted' | 'new_message' | 'slot_reminder' | 'gym_alert';
   title: string;
   message: string;
   read: boolean;
   linkUrl?: string;
+  resourceId?: string;
+  eventId?: string;
   createdAt: string;
 }
 
@@ -154,39 +156,6 @@ export function getMatchRecommendations(
 /**
  * Firestore Conversations & Real-Time Chat
  */
-export function getConversationId(uid1: string, uid2: string): string {
-  return [uid1, uid2].sort().join('_').replace(/[^a-zA-Z0-9_-]/g, '-');
-}
-
-export async function createOrGetConversation(
-  myUid: string,
-  myName: string,
-  otherUid: string,
-  otherName: string,
-): Promise<string> {
-  const convId = getConversationId(myUid, otherUid);
-  const convRef = doc(db, 'conversations', convId);
-
-  try {
-    const existing = await getDoc(convRef);
-    if (!existing.exists()) {
-      const payload: CloudConversation = {
-        id: convId,
-        participantIds: [myUid, otherUid],
-        participantNames: {
-          [myUid]: myName || 'Du',
-          [otherUid]: otherName || 'Trainingspartner',
-        },
-        createdAt: new Date().toISOString(),
-      };
-      await setDoc(convRef, payload);
-    }
-    return convId;
-  } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, `conversations/${convId}`);
-  }
-}
-
 export function subscribeToConversations(
   userId: string,
   onUpdate: (conversations: CloudConversation[]) => void,
@@ -268,6 +237,8 @@ export async function sendChatMessage(
         title: `Neue Nachricht von ${senderName}`,
         message: text.trim().slice(0, 100),
         linkUrl: `/chat/${conversationId}`,
+        resourceId: conversationId,
+        eventId: msgId,
       });
     }
   } catch (err) {
@@ -303,8 +274,10 @@ export function subscribeToNotifications(
 
 export async function sendNotification(
   userId: string,
-  notification: Omit<CloudNotification, 'id' | 'userId' | 'read' | 'createdAt'>,
+  notification: Omit<CloudNotification, 'id' | 'userId' | 'senderId' | 'read' | 'createdAt'>,
 ): Promise<void> {
+  const senderId = auth.currentUser?.uid;
+  if (!senderId) throw new Error('Firebase user must be signed in to send a notification');
   const notifId = `notif_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
   const now = new Date().toISOString();
   const path = `users/${userId}/notifications/${notifId}`;
@@ -312,11 +285,14 @@ export async function sendNotification(
   const payload: CloudNotification = {
     id: notifId,
     userId,
+    senderId,
     type: notification.type,
     title: notification.title,
     message: notification.message,
     read: false,
     linkUrl: notification.linkUrl,
+    resourceId: notification.resourceId,
+    eventId: notification.eventId,
     createdAt: now,
   };
 
