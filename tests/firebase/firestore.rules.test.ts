@@ -110,12 +110,12 @@ test('Firestore access requires a verified DHBW email and rejects lookalike doma
   }
 });
 
-test('community profiles keep private profiles owner-only and allow only explicitly public reads', async () => {
+test('community profiles keep private data owner-only and deny raw collection listing', async () => {
   await resetFirestore();
   await environment.withSecurityRulesDisabled(async (context) => {
     const db = context.firestore();
     await setDoc(doc(db, 'community_profiles/alice'), profile('alice', false));
-    await setDoc(doc(db, 'community_profiles/alice-public'), profile('alice', true));
+    await setDoc(doc(db, 'community_profiles/alice-public'), profile('alice-public', true));
   });
 
   const aliceDb = signedIn(alice);
@@ -123,16 +123,56 @@ test('community profiles keep private profiles owner-only and allow only explici
   await assertSucceeds(getDoc(doc(aliceDb, 'community_profiles/alice')));
   await assertFails(getDoc(doc(bobDb, 'community_profiles/alice')));
   await assertSucceeds(getDoc(doc(bobDb, 'community_profiles/alice-public')));
-  await assertSucceeds(getDocs(query(
+  // Public profile reads must reject nested objects in string-list fields.
+  await environment.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), 'community_profiles/legacy-nested-private-field'), {
+      ...profile('legacy-nested-private-field', true),
+      trainingGoals: [{ privateEmail: 'must-not-leak@example.com' }],
+    });
+    await setDoc(doc(context.firestore(), 'community_profiles/path-user-mismatch'), profile('alice', true));
+  });
+  await assertFails(getDoc(doc(bobDb, 'community_profiles/legacy-nested-private-field')));
+  await assertFails(getDoc(doc(bobDb, 'community_profiles/path-user-mismatch')));
+
+  await assertFails(getDocs(query(
     collection(bobDb, 'community_profiles'),
     where('isPublicPresence', '==', true),
   )));
   await assertFails(getDocs(collection(bobDb, 'community_profiles')));
+
+  // Simulate a legacy/Admin-created document that bypassed write rules.
+  // Public reads must still reject it rather than expose unexpected fields.
+  await environment.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), 'community_profiles/legacy-with-private-field'), {
+      ...profile('legacy-with-private-field', true),
+      email: 'private@example.com',
+    });
+  });
+  await assertFails(getDoc(doc(bobDb, 'community_profiles/legacy-with-private-field')));
+  await assertFails(getDocs(query(
+    collection(bobDb, 'community_profiles'),
+    where('isPublicPresence', '==', true),
+  )));
   await assertSucceeds(updateDoc(doc(aliceDb, 'community_profiles/alice'), { firstName: 'Alice updated' }));
   await assertFails(updateDoc(doc(bobDb, 'community_profiles/alice'), { firstName: 'Takeover' }));
   await assertFails(deleteDoc(doc(bobDb, 'community_profiles/alice')));
   await assertFails(setDoc(doc(bobDb, 'community_profiles/alice-copy'), profile('alice', true)));
   await assertSucceeds(setDoc(doc(bobDb, 'community_profiles/bob'), profile('bob', true)));
+  await assertFails(updateDoc(doc(bobDb, 'community_profiles/bob'), {
+    trainingGoals: [{ privateEmail: 'must-not-leak@example.com' }],
+  }));
+  await assertFails(updateDoc(doc(bobDb, 'community_profiles/bob'), {
+    preferredTimes: [{ privateEmail: 'must-not-leak@example.com' }],
+  }));
+  await assertFails(updateDoc(doc(bobDb, 'community_profiles/bob'), {
+    interests: [{ privateEmail: 'must-not-leak@example.com' }],
+  }));
+
+  await assertFails(updateDoc(doc(bobDb, 'community_profiles/bob'), { email: 'private@example.com' }));
+  await assertFails(setDoc(doc(bobDb, 'community_profiles/bob-with-private-field'), {
+    ...profile('bob', true),
+    email: 'private@example.com',
+  }));
   await assertFails(setDoc(doc(bobDb, 'community_profiles/alice-takeover'), profile('alice', true)));
   await assertSucceeds(deleteDoc(doc(aliceDb, 'community_profiles/alice')));
 });
@@ -225,6 +265,7 @@ test('conversations and chat messages are limited to conversation participants',
   await assertFails(updateDoc(doc(bobDb, 'conversations/conversation-one'), { participantIds: [bob.uid] }));
   await assertSucceeds(updateDoc(doc(bobDb, 'conversations/conversation-one'), {
     lastMessageText: 'Reply',
+    lastMessageAt: '2026-10-22T12:00:00.000Z',
     lastSenderId: bob.uid,
   }));
   await assertFails(updateDoc(doc(bobDb, 'conversations/conversation-one'), {
@@ -234,7 +275,12 @@ test('conversations and chat messages are limited to conversation participants',
   await assertFails(updateDoc(doc(bobDb, 'conversations/conversation-one'), {
     lastMessageText: 'Malformed timestamp',
     lastSenderId: bob.uid,
-    lastMessageAt: 'not-a-timestamp',
+    lastMessageAt: 123456,
+  }));
+  await assertFails(updateDoc(doc(bobDb, 'conversations/conversation-one'), {
+    lastMessageText: 'Malformed timestamp string',
+    lastSenderId: bob.uid,
+    lastMessageAt: 'tomorrow at noon',
   }));
   await assertFails(updateDoc(doc(bobDb, 'conversations/conversation-one'), {
     lastMessageText: 'Invalid sender metadata',
