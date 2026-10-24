@@ -93,17 +93,18 @@ service cloud.firestore {
     function isValidConversation(data) {
       return data.keys().hasAll(['id', 'participantIds']) &&
              data.keys().hasOnly([
-               'id', 'participantIds', 'participantNames', 'createdAt',
+               'id', 'participantIds', 'participantNames', 'createdAt', 'title',
                'lastMessageText', 'lastMessageAt', 'lastSenderId'
              ]) &&
              isValidId(data.id) &&
              data.participantIds is list &&
-             data.participantIds.size() == 2 &&
+             data.participantIds.size() >= 2 && data.participantIds.size() <= 10 &&
              isValidId(data.participantIds[0]) &&
              isValidId(data.participantIds[1]) &&
              data.participantIds[0] != data.participantIds[1] &&
              (!('participantNames' in data) || (data.participantNames is map && data.participantNames.keys().hasOnly(data.participantIds) && data.participantNames.keys().hasAll(data.participantIds) && data.participantNames[data.participantIds[0]] is string && data.participantNames[data.participantIds[0]].size() <= 60 && data.participantNames[data.participantIds[1]] is string && data.participantNames[data.participantIds[1]].size() <= 60)) &&
              (!('createdAt' in data) || isValidTimestampString(data.createdAt)) &&
+             (!('title' in data) || (data.title is string && data.title.size() <= 80)) &&
              (!('lastMessageText' in data) || (data.lastMessageText is string && data.lastMessageText.size() <= 500)) &&
              (!('lastMessageAt' in data) || isValidTimestampString(data.lastMessageAt)) &&
              (!('lastSenderId' in data) ||
