@@ -605,7 +605,11 @@ test('cross-origin preflight allows Firebase bearer authorization for exact orig
 
   const rejected = await fetch(`${baseUrl}/api/gym/check-in`, {
     method: 'POST',
-    headers: { Origin: 'https://untrusted.example' },
+    headers: {
+      Origin: 'https://untrusted.example',
+      'X-Forwarded-Host': 'untrusted.example',
+      'X-Forwarded-Proto': 'https',
+    },
   });
   assert.equal(rejected.status, 403);
 });
@@ -685,4 +689,31 @@ test('booking updates are owner-scoped and reject invalid or unauthenticated pay
     bookings: Array<{ id: string; startsAt: string; endsAt: string; title: string; status: string; entryType: string }>;
   }).bookings.find((item) => item.id === booking.id);
   assert.deepEqual(afterInvalid, afterBlocked);
+});
+
+test('untrusted Origin cannot bypass the allowlist by spoofing X-Forwarded-Host', async (t) => {
+  const { baseUrl } = await startApi(t, { secureCookies: true, allowedOrigins: ['capacitor://localhost'] });
+  const token = firebaseToken('origin-spoof-user');
+  const response = await fetch(`${baseUrl}/api/gym/check-in`, {
+    method: 'POST',
+    headers: {
+      Origin: 'https://untrusted.example',
+      'X-Forwarded-Host': 'untrusted.example',
+      authorization: `Bearer ${token}`,
+    },
+  });
+  assert.equal(response.status, 403);
+});
+
+test('same host with a different scheme is not treated as same-origin', async (t) => {
+  const { baseUrl } = await startApi(t);
+  const token = firebaseToken('origin-scheme-user');
+  const requestHost = new URL(baseUrl).host;
+  const response = await fetch(`${baseUrl}/api/gym/session`, {
+    headers: {
+      Origin: `https://${requestHost}`,
+      authorization: `Bearer ${token}`,
+    },
+  });
+  assert.equal(response.status, 403);
 });

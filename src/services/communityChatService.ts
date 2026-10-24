@@ -1,13 +1,7 @@
 import {
-  collection,
   doc,
-  getDocs,
-  onSnapshot,
-  orderBy,
-  query,
   setDoc,
   updateDoc,
-  where,
   type Unsubscribe,
 } from 'firebase/firestore';
 import { auth, db, handleFirestoreError, OperationType } from './firebase';
@@ -156,25 +150,89 @@ export function getMatchRecommendations(
 /**
  * Firestore Conversations & Real-Time Chat
  */
+function startCommunityApiPolling<T>(
+  endpoint: string,
+  firebaseUid: string,
+  firestorePath: string,
+  resultKey: string,
+  onUpdate: (items: T[]) => void,
+): Unsubscribe {
+  let active = true;
+  let requestInFlight = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const refresh = async (): Promise<void> => {
+    const user = auth.currentUser;
+    if (!active || !user || user.uid !== firebaseUid) {
+      active = false;
+      if (timer !== undefined) clearTimeout(timer);
+      return;
+    }
+    if (requestInFlight) return;
+    requestInFlight = true;
+    try {
+      const token = await user.getIdToken();
+      if (!active || auth.currentUser?.uid !== firebaseUid) return;
+      const response = await fetch(endpoint, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json',
+        },
+        cache: 'no-store',
+      });
+      if (!response.ok) {
+        throw new Error(`Community API request failed with status ${response.status}`);
+      }
+      const payload: unknown = await response.json();
+      if (typeof payload !== 'object' || payload === null || Array.isArray(payload) ||
+          !(resultKey in payload) || !Array.isArray((payload as Record<string, unknown>)[resultKey])) {
+        throw new Error('Community API returned an invalid response');
+      }
+      if (active && auth.currentUser?.uid === firebaseUid) {
+        onUpdate((payload as Record<string, unknown>)[resultKey] as T[]);
+      }
+    } catch (error) {
+      if (active) {
+        console.error('[Community API]', {
+          path: firestorePath,
+          error: error instanceof Error ? error.message : 'unknown error',
+        });
+      }
+    } finally {
+      requestInFlight = false;
+      if (active && auth.currentUser?.uid === firebaseUid) {
+        timer = setTimeout(() => void refresh(), 5_000);
+      } else {
+        active = false;
+      }
+    }
+  };
+
+  void refresh();
+  return () => {
+    active = false;
+    if (timer !== undefined) clearTimeout(timer);
+  };
+}
+
+/**
+ * Community lists are served by the authenticated API. Polling preserves the existing
+ * subscription interface while preventing Firestore list queries from exposing raw documents.
+ */
 export function subscribeToConversations(
   userId: string,
   onUpdate: (conversations: CloudConversation[]) => void,
 ): Unsubscribe {
-  if (!auth.currentUser || !userId || auth.currentUser.uid !== userId) {
-    return () => {};
-  }
-  const path = 'conversations';
-  const q = query(collection(db, path), where('participantIds', 'array-contains', userId));
-
-  return onSnapshot(
-    q,
-    (snapshot) => {
-      const list = snapshot.docs.map((d) => d.data() as CloudConversation);
-      list.sort((a, b) => (b.lastMessageAt || b.createdAt || '').localeCompare(a.lastMessageAt || a.createdAt || ''));
-      onUpdate(list);
-    },
-    (error) => {
-      handleFirestoreError(error, OperationType.LIST, path);
+  if (!auth.currentUser || !userId || auth.currentUser.uid !== userId) return () => {};
+  return startCommunityApiPolling<CloudConversation>(
+    '/api/gym/community/conversations',
+    userId,
+    'conversations',
+    'conversations',
+    (conversations) => {
+      conversations.sort((a, b) => (b.lastMessageAt || b.createdAt || '').localeCompare(a.lastMessageAt || a.createdAt || ''));
+      onUpdate(conversations);
     },
   );
 }
@@ -183,21 +241,16 @@ export function subscribeToMessages(
   conversationId: string,
   onUpdate: (messages: CloudChatMessage[]) => void,
 ): Unsubscribe {
-  if (!auth.currentUser || !conversationId) {
-    return () => {};
-  }
-  const path = `conversations/${conversationId}/messages`;
-  const q = query(collection(db, 'conversations', conversationId, 'messages'));
-
-  return onSnapshot(
-    q,
-    (snapshot) => {
-      const msgs = snapshot.docs.map((d) => d.data() as CloudChatMessage);
-      msgs.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-      onUpdate(msgs);
-    },
-    (error) => {
-      handleFirestoreError(error, OperationType.LIST, path);
+  const user = auth.currentUser;
+  if (!user || !conversationId) return () => {};
+  return startCommunityApiPolling<CloudChatMessage>(
+    `/api/gym/community/conversations/${encodeURIComponent(conversationId)}/messages`,
+    user.uid,
+    `conversations/${conversationId}/messages`,
+    'messages',
+    (messages) => {
+      messages.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      onUpdate(messages);
     },
   );
 }
@@ -253,21 +306,15 @@ export function subscribeToNotifications(
   userId: string,
   onUpdate: (notifications: CloudNotification[]) => void,
 ): Unsubscribe {
-  if (!auth.currentUser || !userId || auth.currentUser.uid !== userId) {
-    return () => {};
-  }
-  const path = `users/${userId}/notifications`;
-  const q = query(collection(db, 'users', userId, 'notifications'));
-
-  return onSnapshot(
-    q,
-    (snapshot) => {
-      const items = snapshot.docs.map((d) => d.data() as CloudNotification);
-      items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-      onUpdate(items);
-    },
-    (error) => {
-      handleFirestoreError(error, OperationType.LIST, path);
+  if (!auth.currentUser || !userId || auth.currentUser.uid !== userId) return () => {};
+  return startCommunityApiPolling<CloudNotification>(
+    '/api/gym/community/notifications',
+    userId,
+    `users/${userId}/notifications`,
+    'notifications',
+    (notifications) => {
+      notifications.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      onUpdate(notifications);
     },
   );
 }
@@ -278,7 +325,10 @@ export async function sendNotification(
 ): Promise<void> {
   const senderId = auth.currentUser?.uid;
   if (!senderId) throw new Error('Firebase user must be signed in to send a notification');
-  const notifId = `notif_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  // Message notifications use the message ID so the same message cannot create duplicate notifications.
+  const notifId = notification.type === 'new_message' && notification.eventId
+    ? notification.eventId
+    : `notif_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
   const now = new Date().toISOString();
   const path = `users/${userId}/notifications/${notifId}`;
 

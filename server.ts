@@ -4,7 +4,13 @@ import { DatabaseSync } from 'node:sqlite';
 import { existsSync, mkdirSync, realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { createGymAppApi } from './server/gym-app-api.ts';
-import { writeCommunityConversation, writePartnerNotification } from './server/firebaseNotifications.ts';
+import {
+  readCommunityConversations,
+  readCommunityMessages,
+  readCommunityNotifications,
+  writeCommunityConversation,
+  writePartnerNotification,
+} from './server/firebaseNotifications.ts';
 
 const isProduction = process.env.NODE_ENV === 'production';
 const port = Number(process.env.PORT || 3000);
@@ -61,13 +67,15 @@ mkdirSync(dirname(databasePath), { recursive: true });
 const database = new DatabaseSync(databasePath);
 
 const app = express();
-app.set('trust proxy', true);
 
 const gymApi = createGymAppApi(database, {
   secureCookies: isProduction,
   maxCheckInHours: Number(process.env.GYM_MAX_CHECK_IN_HOURS || 8),
   partnerNotificationWriter: writePartnerNotification,
   communityConversationWriter: writeCommunityConversation,
+  communityConversationReader: readCommunityConversations,
+  communityMessageReader: readCommunityMessages,
+  communityNotificationReader: readCommunityNotifications,
 });
 
 app.use(gymApi);

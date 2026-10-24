@@ -95,6 +95,12 @@ test('Firestore access requires a verified DHBW email and rejects lookalike doma
   });
 
   await assertSucceeds(getDoc(doc(signedIn(alice), 'community_profiles/alice')));
+  for (const identity of [
+    { uid: 'mosbach-lehre', email: 'student@lehre.mosbach.dhbw.de', email_verified: true },
+    { uid: 'mosbach-campus', email: 'student@mosbach.dhbw.de', email_verified: true },
+  ]) {
+    await assertSucceeds(getDoc(doc(signedIn(identity), 'community_profiles/alice')));
+  }
   await assertFails(getDoc(doc(signedIn({ ...alice, email_verified: false }), 'community_profiles/alice')));
   await assertFails(getDoc(doc(signedIn(outsider), 'community_profiles/alice')));
   await assertFails(setDoc(doc(signedIn(outsider), 'community_profiles/outsider'), profile('outsider', true)));
@@ -110,12 +116,16 @@ test('Firestore access requires a verified DHBW email and rejects lookalike doma
   }
 });
 
-test('community profiles keep private profiles owner-only and allow only explicitly public reads', async () => {
+test('community profiles deny raw listing and reject extra fields on writes and legacy reads', async () => {
   await resetFirestore();
   await environment.withSecurityRulesDisabled(async (context) => {
     const db = context.firestore();
     await setDoc(doc(db, 'community_profiles/alice'), profile('alice', false));
-    await setDoc(doc(db, 'community_profiles/alice-public'), profile('alice', true));
+    await setDoc(doc(db, 'community_profiles/alice-public'), profile('alice-public', true));
+    await setDoc(doc(db, 'community_profiles/legacy-private-field'), {
+      ...profile('legacy-private-field', true),
+      email: 'private@example.com',
+    });
   });
 
   const aliceDb = signedIn(alice);
@@ -123,16 +133,45 @@ test('community profiles keep private profiles owner-only and allow only explici
   await assertSucceeds(getDoc(doc(aliceDb, 'community_profiles/alice')));
   await assertFails(getDoc(doc(bobDb, 'community_profiles/alice')));
   await assertSucceeds(getDoc(doc(bobDb, 'community_profiles/alice-public')));
-  await assertSucceeds(getDocs(query(
+  // Public profile reads must reject nested objects in string-list fields.
+  await environment.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), 'community_profiles/legacy-nested-private-field'), {
+      ...profile('legacy-nested-private-field', true),
+      trainingGoals: [{ privateEmail: 'must-not-leak@example.com' }],
+    });
+    await setDoc(doc(context.firestore(), 'community_profiles/path-user-mismatch'), profile('alice', true));
+  });
+  await assertFails(getDoc(doc(bobDb, 'community_profiles/legacy-nested-private-field')));
+  await assertFails(getDoc(doc(bobDb, 'community_profiles/path-user-mismatch')));
+
+  await assertFails(getDoc(doc(bobDb, 'community_profiles/legacy-private-field')));
+  await assertFails(getDocs(query(
     collection(bobDb, 'community_profiles'),
     where('isPublicPresence', '==', true),
   )));
   await assertFails(getDocs(collection(bobDb, 'community_profiles')));
   await assertSucceeds(updateDoc(doc(aliceDb, 'community_profiles/alice'), { firstName: 'Alice updated' }));
+  await assertSucceeds(updateDoc(doc(aliceDb, 'community_profiles/alice'), { updatedAt: '2026-10-22T10:00:00.000Z' }));
+  await assertFails(updateDoc(doc(aliceDb, 'community_profiles/alice'), { updatedAt: 'tomorrow at noon' }));
   await assertFails(updateDoc(doc(bobDb, 'community_profiles/alice'), { firstName: 'Takeover' }));
   await assertFails(deleteDoc(doc(bobDb, 'community_profiles/alice')));
   await assertFails(setDoc(doc(bobDb, 'community_profiles/alice-copy'), profile('alice', true)));
   await assertSucceeds(setDoc(doc(bobDb, 'community_profiles/bob'), profile('bob', true)));
+  await assertFails(updateDoc(doc(bobDb, 'community_profiles/bob'), {
+    trainingGoals: [{ privateEmail: 'must-not-leak@example.com' }],
+  }));
+  await assertFails(updateDoc(doc(bobDb, 'community_profiles/bob'), {
+    preferredTimes: [{ privateEmail: 'must-not-leak@example.com' }],
+  }));
+  await assertFails(updateDoc(doc(bobDb, 'community_profiles/bob'), {
+    interests: [{ privateEmail: 'must-not-leak@example.com' }],
+  }));
+
+  await assertFails(updateDoc(doc(bobDb, 'community_profiles/bob'), { email: 'private@example.com' }));
+  await assertFails(setDoc(doc(bobDb, 'community_profiles/bob-with-private-field'), {
+    ...profile('bob', true),
+    email: 'private@example.com',
+  }));
   await assertFails(setDoc(doc(bobDb, 'community_profiles/alice-takeover'), profile('alice', true)));
   await assertSucceeds(deleteDoc(doc(aliceDb, 'community_profiles/alice')));
 });
@@ -155,11 +194,14 @@ test('partner requests are readable only by participants and writes are server-o
   await assertSucceeds(getDoc(requestRef));
   await assertSucceeds(getDoc(doc(bobDb, 'partner_requests/request-one')));
   await assertFails(getDoc(doc(outsiderDb, 'partner_requests/request-one')));
-  await assertSucceeds(getDocs(query(
+  // Raw Firestore lists are denied: query constraints cannot prove the full
+  // document schema, and Firestore rules cannot redact unexpected private fields.
+  // The authenticated API is the supported listing path and returns scoped DTOs.
+  await assertFails(getDocs(query(
     collection(aliceDb, 'partner_requests'),
     where('senderId', '==', alice.uid),
   )));
-  await assertSucceeds(getDocs(query(
+  await assertFails(getDocs(query(
     collection(bobDb, 'partner_requests'),
     where('receiverId', '==', bob.uid),
   )));
@@ -184,6 +226,47 @@ test('partner requests are readable only by participants and writes are server-o
   }));
 });
 
+test('partner request reads reject malformed documents and mismatched stored IDs', async () => {
+  await resetFirestore();
+  await environment.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await setDoc(doc(db, 'partner_requests/private-field'), {
+      senderId: alice.uid,
+      receiverId: bob.uid,
+      status: 'pending',
+      note: 'Valid-looking request',
+      privateEmail: 'must-not-leak@example.com',
+    });
+    await setDoc(doc(db, 'partner_requests/path-id-mismatch'), {
+      id: 'different-id',
+      senderId: alice.uid,
+      receiverId: bob.uid,
+      status: 'pending',
+    });
+    await setDoc(doc(db, 'partner_requests/valid-request'), {
+      id: 'valid-request',
+      senderId: alice.uid,
+      receiverId: bob.uid,
+      status: 'pending',
+      note: 'Meet at the gym',
+      createdAt: '2026-10-22T10:00:00.000Z',
+      updatedAt: '2026-10-22T10:00:00.000Z',
+    });
+  });
+
+  const aliceDb = signedIn(alice);
+  const bobDb = signedIn(bob);
+  await assertFails(getDoc(doc(aliceDb, 'partner_requests/private-field')));
+  await assertFails(getDoc(doc(bobDb, 'partner_requests/private-field')));
+  await assertFails(getDoc(doc(aliceDb, 'partner_requests/path-id-mismatch')));
+  await assertSucceeds(getDoc(doc(aliceDb, 'partner_requests/valid-request')));
+  await assertSucceeds(getDoc(doc(bobDb, 'partner_requests/valid-request')));
+  await assertFails(getDocs(query(
+    collection(aliceDb, 'partner_requests'),
+    where('senderId', '==', alice.uid),
+  )));
+});
+
 test('conversations and chat messages are limited to conversation participants', async () => {
   await resetFirestore();
   await environment.withSecurityRulesDisabled(async (context) => {
@@ -201,6 +284,26 @@ test('conversations and chat messages are limited to conversation participants',
       senderName: 'Alice',
       text: 'Hello',
     });
+    await setDoc(doc(db, 'conversations/path-id-mismatch'), {
+      id: 'different-id',
+      participantIds: [alice.uid, bob.uid],
+    });
+    await setDoc(doc(db, 'conversations/conversation-invalid-participant-id'), {
+      id: 'conversation-invalid-participant-id',
+      participantIds: ['', bob.uid],
+    });
+    await setDoc(doc(db, 'conversations/path-id-mismatch/messages/valid-child-under-invalid-parent'), {
+      id: 'valid-child-under-invalid-parent',
+      conversationId: 'path-id-mismatch',
+      senderId: alice.uid,
+      text: 'Child of a malformed conversation',
+    });
+    await setDoc(doc(db, 'conversations/conversation-one/messages/path-id-mismatch'), {
+      id: 'different-message-id',
+      conversationId: 'conversation-one',
+      senderId: alice.uid,
+      text: 'Malformed legacy message',
+    });
   });
 
   const aliceDb = signedIn(alice);
@@ -210,8 +313,45 @@ test('conversations and chat messages are limited to conversation participants',
   const messageRef = doc(aliceDb, 'conversations/conversation-one/messages/message-one');
   await assertSucceeds(getDoc(conversationRef));
   await assertSucceeds(getDoc(doc(bobDb, 'conversations/conversation-one')));
+  await assertFails(getDoc(doc(aliceDb, 'conversations/path-id-mismatch')));
+  await assertFails(getDoc(doc(bobDb, 'conversations/conversation-invalid-participant-id')));
+  // A valid child message must not bypass validation of its malformed parent.
+  await assertFails(getDoc(doc(bobDb, 'conversations/path-id-mismatch/messages/valid-child-under-invalid-parent')));
+  await assertFails(setDoc(doc(bobDb, 'conversations/path-id-mismatch/messages/bob-write'), {
+    id: 'bob-write',
+    conversationId: 'path-id-mismatch',
+    senderId: bob.uid,
+    text: 'Should not be writable under a malformed parent',
+  }));
+  await assertFails(deleteDoc(doc(aliceDb, 'conversations/path-id-mismatch/messages/valid-child-under-invalid-parent')));
+  await assertFails(getDoc(doc(aliceDb, 'conversations/conversation-one/messages/path-id-mismatch')));
+  await assertFails(getDoc(doc(bobDb, 'conversations/conversation-with-extra-field')));
   await assertFails(getDoc(doc(charlieDb, 'conversations/conversation-one')));
-  await assertSucceeds(getDocs(query(
+  await assertFails(getDocs(query(
+    collection(bobDb, 'conversations'),
+    where('participantIds', 'array-contains', bob.uid),
+  )));
+  await environment.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), 'conversations/conversation-with-extra-field'), {
+      id: 'conversation-with-extra-field',
+      participantIds: [alice.uid, bob.uid],
+      privateEmail: 'private@example.com',
+    });
+  });
+  await assertFails(getDoc(doc(bobDb, 'conversations/conversation-with-extra-field')));
+  await environment.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), 'conversations/conversation-with-private-name'), {
+      id: 'conversation-with-private-name',
+      participantIds: [alice.uid, bob.uid],
+      participantNames: {
+        alice: 'Alice',
+        bob: 'Bob',
+        privateEmail: 'private@example.com',
+      },
+    });
+  });
+  await assertFails(getDoc(doc(bobDb, 'conversations/conversation-with-private-name')));
+  await assertFails(getDocs(query(
     collection(bobDb, 'conversations'),
     where('participantIds', 'array-contains', bob.uid),
   )));
@@ -219,13 +359,25 @@ test('conversations and chat messages are limited to conversation participants',
   await assertSucceeds(getDoc(messageRef));
   await assertSucceeds(getDoc(doc(bobDb, 'conversations/conversation-one/messages/message-one')));
   await assertFails(getDoc(doc(charlieDb, 'conversations/conversation-one/messages/message-one')));
-  await assertSucceeds(getDocs(collection(bobDb, 'conversations/conversation-one/messages')));
+  await assertFails(getDocs(collection(bobDb, 'conversations/conversation-one/messages')));
+  await environment.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), 'conversations/conversation-one/messages/legacy-extra-field'), {
+      id: 'legacy-extra-field',
+      conversationId: 'conversation-one',
+      senderId: alice.uid,
+      text: 'Legacy message',
+      privateEmail: 'private@example.com',
+    });
+  });
+  await assertFails(getDoc(doc(bobDb, 'conversations/conversation-one/messages/legacy-extra-field')));
+  await assertFails(getDocs(collection(bobDb, 'conversations/conversation-one/messages')));
   await assertFails(getDocs(collection(charlieDb, 'conversations/conversation-one/messages')));
   await assertFails(updateDoc(doc(charlieDb, 'conversations/conversation-one'), { lastMessageText: 'Spoofed' }));
   await assertFails(updateDoc(doc(bobDb, 'conversations/conversation-one'), { participantIds: [bob.uid] }));
   await assertSucceeds(updateDoc(doc(bobDb, 'conversations/conversation-one'), {
     lastMessageText: 'Reply',
     lastSenderId: bob.uid,
+    lastMessageAt: '2026-10-22T08:00:00.000Z',
   }));
   await assertFails(updateDoc(doc(bobDb, 'conversations/conversation-one'), {
     lastMessageText: 'Spoofed sender',
@@ -251,6 +403,14 @@ test('conversations and chat messages are limited to conversation participants',
     senderId: bob.uid,
     senderName: 'Bob',
     text: 'Reply',
+  }));
+  await assertFails(setDoc(doc(bobDb, 'conversations/conversation-one/messages/extra-field'), {
+    id: 'extra-field',
+    conversationId: 'conversation-one',
+    senderId: bob.uid,
+    senderName: 'Bob',
+    text: 'Reply',
+    privateEmail: 'private@example.com',
   }));
   await assertFails(setDoc(doc(charlieDb, 'conversations/forged-conversation'), {
     id: 'forged-conversation',
@@ -299,6 +459,16 @@ test('notifications are private and cross-user delivery requires a real particip
       senderId: alice.uid,
       text: 'A valid chat message',
     });
+    await setDoc(doc(db, 'conversations/wrong-id'), {
+      id: 'different-id',
+      participantIds: [alice.uid, bob.uid],
+    });
+    await setDoc(doc(db, 'conversations/wrong-id/messages/wrong-message'), {
+      id: 'wrong-message',
+      conversationId: 'wrong-id',
+      senderId: alice.uid,
+      text: 'Message in malformed conversation',
+    });
     await setDoc(doc(db, 'users/alice/notifications/existing'), notification({
       id: 'existing',
       userId: alice.uid,
@@ -309,18 +479,76 @@ test('notifications are private and cross-user delivery requires a real particip
 
   const aliceDb = signedIn(alice);
   const bobDb = signedIn(bob);
-  await assertSucceeds(getDocs(collection(aliceDb, 'users/alice/notifications')));
+  await assertFails(getDocs(collection(aliceDb, 'users/alice/notifications')));
   await assertSucceeds(getDoc(doc(aliceDb, 'users/alice/notifications/existing')));
+  await environment.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), 'users/alice/notifications/legacy-extra-field'), {
+      ...notification({
+        id: 'legacy-extra-field',
+        userId: alice.uid,
+        senderId: alice.uid,
+        type: 'slot_reminder',
+      }),
+      privateEmail: 'private@example.com',
+    });
+  });
+  await assertFails(getDoc(doc(aliceDb, 'users/alice/notifications/legacy-extra-field')));
+  await assertFails(getDocs(collection(aliceDb, 'users/alice/notifications')));
   await assertFails(getDoc(doc(bobDb, 'users/alice/notifications/existing')));
+  await environment.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), 'users/alice/notifications/path-id-mismatch'), notification({
+      id: 'different-notification-id',
+      userId: alice.uid,
+      senderId: alice.uid,
+      type: 'slot_reminder',
+    }));
+  });
+  await assertFails(getDoc(doc(aliceDb, 'users/alice/notifications/path-id-mismatch')));
   await assertFails(getDocs(collection(bobDb, 'users/alice/notifications')));
   await assertFails(updateDoc(doc(bobDb, 'users/alice/notifications/existing'), { read: true }));
   await assertFails(deleteDoc(doc(bobDb, 'users/alice/notifications/existing')));
-  await assertSucceeds(setDoc(doc(aliceDb, 'users/alice/notifications/reminder'), notification({
-    id: 'reminder',
+  await assertFails(setDoc(doc(aliceDb, 'users/alice/notifications/create-path-id-mismatch'), notification({
+    id: 'different-notification-id',
     userId: alice.uid,
     senderId: alice.uid,
     type: 'slot_reminder',
   })));
+  await assertSucceeds(setDoc(doc(aliceDb, 'users/alice/notifications/reminder'), {
+    ...notification({
+      id: 'reminder',
+      userId: alice.uid,
+      senderId: alice.uid,
+      type: 'slot_reminder',
+    }),
+    linkUrl: '/calendar',
+  }));
+  await assertFails(setDoc(doc(aliceDb, 'users/alice/notifications/external-link'), {
+    ...notification({
+      id: 'external-link',
+      userId: alice.uid,
+      senderId: alice.uid,
+      type: 'slot_reminder',
+    }),
+    linkUrl: 'https://untrusted.example',
+  }));
+  await assertFails(setDoc(doc(aliceDb, 'users/alice/notifications/protocol-relative-link'), {
+    ...notification({
+      id: 'protocol-relative-link',
+      userId: alice.uid,
+      senderId: alice.uid,
+      type: 'slot_reminder',
+    }),
+    linkUrl: '//untrusted.example',
+  }));
+  await assertFails(setDoc(doc(aliceDb, 'users/alice/notifications/extra-field'), {
+    ...notification({
+      id: 'extra-field',
+      userId: alice.uid,
+      senderId: alice.uid,
+      type: 'slot_reminder',
+    }),
+    privateEmail: 'private@example.com',
+  }));
   await assertFails(setDoc(doc(aliceDb, 'users/bob/notifications/spoofed-reminder'), notification({
     id: 'spoofed-reminder',
     userId: bob.uid,
@@ -347,8 +575,24 @@ test('notifications are private and cross-user delivery requires a real particip
     type: 'partner_accepted',
     resourceId: 'request-one',
   })));
-  await assertSucceeds(setDoc(doc(aliceDb, 'users/bob/notifications/new-message'), notification({
-    id: 'new-message',
+  await assertFails(setDoc(doc(aliceDb, 'users/bob/notifications/malformed-source'), notification({
+    id: 'malformed-source',
+    userId: bob.uid,
+    senderId: alice.uid,
+    type: 'new_message',
+    resourceId: 'wrong-id',
+    eventId: 'wrong-message',
+  })));
+  await assertSucceeds(setDoc(doc(aliceDb, 'users/bob/notifications/message-one'), notification({
+    id: 'message-one',
+    userId: bob.uid,
+    senderId: alice.uid,
+    type: 'new_message',
+    resourceId: 'conversation-one',
+    eventId: 'message-one',
+  })));
+  await assertFails(setDoc(doc(aliceDb, 'users/bob/notifications/duplicate-message-notification'), notification({
+    id: 'duplicate-message-notification',
     userId: bob.uid,
     senderId: alice.uid,
     type: 'new_message',

@@ -96,6 +96,7 @@ test('direct test-project server startup refuses before creating a database or l
   const tempDirectory = mkdtempSync(join(tmpdir(), 'dhbw-test-server-guard-'));
   try {
     const databasePath = join(tempDirectory, 'not-created', 'gym-test.sqlite3');
+    // Run outside the repository so dotenv/config cannot load the developer's .env.
     const environment = {
       ...process.env,
       NODE_ENV: 'development',
@@ -112,13 +113,19 @@ test('direct test-project server startup refuses before creating a database or l
       'FIREBASE_CONFIG',
       'FIREBASE_TOKEN',
       'GCLOUD_PROJECT',
+      'VITE_FIREBASE_PROJECT_ID',
+      'VITE_FIREBASE_MESSAGING_SENDER_ID',
+      'VITE_FIREBASE_AUTH_DOMAIN',
+      'VITE_FIREBASE_APP_ID',
+      'VITE_FIREBASE_API_KEY',
+      'VITE_FIREBASE_FIRESTORE_DATABASE_ID',
     ]) delete environment[name];
 
     const result = spawnSync(process.execPath, [
       join(repositoryRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs'),
-      'server.ts',
+      join(repositoryRoot, 'server.ts'),
     ], {
-      cwd: repositoryRoot,
+      cwd: tempDirectory,
       env: environment,
       encoding: 'utf8',
       timeout: 10_000,

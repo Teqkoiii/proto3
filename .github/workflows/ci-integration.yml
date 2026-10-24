@@ -1,0 +1,53 @@
+name: Integration CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - integration/firestore-chat-security-on-current-base
+  pull_request:
+    branches:
+      - integration/firestore-chat-security-on-current-base
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Lint, tests, build, Firebase emulator
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Java for Firebase emulators
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npm run lint
+
+      - name: Run unit and service tests
+        run: npm test
+
+      - name: Build production bundle
+        run: npm run build
+
+      - name: Run isolated Firebase Auth, Firestore rules, and API integration tests
+        run: npm run test:firebase
