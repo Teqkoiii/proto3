@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { DatabaseSync } from 'node:sqlite';
 import { deleteApp, initializeApp } from 'firebase/app';
@@ -15,6 +15,8 @@ import {
 } from 'firebase/auth';
 import { getFirestore } from 'firebase-admin/firestore';
 import { createGymAppApi } from '../../server/gym-app-api.ts';
+import { GymAppRepository } from '../../server/gymAppRepository.ts';
+import { hashPassword } from '../../server/password.ts';
 import { getFirebaseAdminApp } from '../../server/firebaseAuth.ts';
 import { writeCommunityConversation, writePartnerNotification } from '../../server/firebaseNotifications.ts';
 
@@ -102,7 +104,146 @@ test('verified emulator users receive server-authorized partner request notifica
   const conversationId = conversationResponse.body.conversationId as string;
   const conversation = await firestore.collection('conversations').doc(conversationId).get();
   assert.deepEqual(conversation.get('participantIds'), [alice.uid, bob.uid].sort());
+
+  // Legacy profiles must not be claimable by email alone; the previous password is required.
+  const legacyEmail = `legacy-link-${randomUUID()}@bad-mergentheim.dhbw.de`;
+  const legacyPassword = 'legacy-password-123';
+  const now = new Date().toISOString();
+  const repository = new GymAppRepository(database);
+  const legacyPrincipalId = repository.createAnonymousPrincipal(
+    randomUUID().replaceAll('-', '').repeat(2),
+    now,
+    new Date(Date.now() + 86_400_000).toISOString(),
+  );
+  repository.createLocalCredentials(legacyPrincipalId, legacyEmail, await hashPassword(legacyPassword), now);
+  repository.upsertCommunityProfile({
+    principalId: legacyPrincipalId,
+    firstName: 'Legacy Profile',
+    lastNameInitial: 'L',
+    courseOfStudy: 'Pflege',
+    trainingGoals: ['Kraft'],
+    preferredTimes: ['abends'],
+    interests: ['Fitness'],
+    bio: 'Profil muss erhalten bleiben',
+    isPublicPresence: true,
+    updatedAt: now,
+  });
+
+  const legacyFirebaseUser = await createVerifiedAccount(auth, legacyEmail);
+  const missingPassword = await api(baseUrl, '/api/gym/auth/link', legacyFirebaseUser.token, {
+    method: 'POST',
+    body: {},
+  });
+  assert.equal(missingPassword.response.status, 409);
+  assertLinkRejectionDidNotMutateLegacyProfile(
+    database, repository, legacyFirebaseUser.uid, legacyPrincipalId,
+    { firstName: 'Legacy Profile', bio: 'Profil muss erhalten bleiben' },
+  );
+
+  const wrongPassword = await api(baseUrl, '/api/gym/auth/link', legacyFirebaseUser.token, {
+    method: 'POST',
+    body: { legacyPassword: 'wrong-password-123' },
+  });
+  assert.equal(wrongPassword.response.status, 401);
+  assertLinkRejectionDidNotMutateLegacyProfile(
+    database, repository, legacyFirebaseUser.uid, legacyPrincipalId,
+    { firstName: 'Legacy Profile', bio: 'Profil muss erhalten bleiben' },
+  );
+
+  const linked = await api(baseUrl, '/api/gym/auth/link', legacyFirebaseUser.token, {
+    method: 'POST',
+    body: { legacyPassword },
+  });
+  assert.equal(linked.response.status, 200);
+
+  const preservedProfile = await api(baseUrl, '/api/gym/profile/community', legacyFirebaseUser.token);
+  assert.equal(preservedProfile.response.status, 200);
+  assert.equal((preservedProfile.body.profile as { firstName: string }).firstName, 'Legacy Profile');
+  assert.equal((preservedProfile.body.profile as { bio: string }).bio, 'Profil muss erhalten bleiben');
+
+  // An expired legacy session must not prove ownership of an existing profile.
+  const expiredEmail = `expired-link-${randomUUID()}@bad-mergentheim.dhbw.de`;
+  const expiredPassword = 'expired-password-123';
+  const expiredSessionToken = randomBytes(32).toString('hex');
+  const expiredNow = new Date().toISOString();
+  const expiredPrincipalId = repository.createAnonymousPrincipal(
+    createHash('sha256').update(expiredSessionToken).digest('hex'),
+    expiredNow,
+    new Date(Date.now() - 60_000).toISOString(),
+  );
+  repository.createLocalCredentials(expiredPrincipalId, expiredEmail, await hashPassword(expiredPassword), expiredNow);
+  repository.upsertCommunityProfile({
+    principalId: expiredPrincipalId,
+    firstName: 'Expired Session Profile',
+    lastNameInitial: 'E',
+    courseOfStudy: 'Pflege',
+    trainingGoals: ['Ausdauer'],
+    preferredTimes: ['morgens'],
+    interests: ['Laufen'],
+    bio: 'Abgelaufene Sitzung darf keinen Zugriff geben',
+    isPublicPresence: true,
+    updatedAt: expiredNow,
+  });
+
+  const expiredFirebaseUser = await createVerifiedAccount(auth, expiredEmail);
+  const expiredSessionLink = await api(baseUrl, '/api/gym/auth/link', expiredFirebaseUser.token, {
+    method: 'POST',
+    body: {},
+    cookie: `gym_app_session=${expiredSessionToken}`,
+  });
+  assert.equal(expiredSessionLink.response.status, 409);
+  assertLinkRejectionDidNotMutateLegacyProfile(
+    database, repository, expiredFirebaseUser.uid, expiredPrincipalId,
+    { firstName: 'Expired Session Profile', bio: 'Abgelaufene Sitzung darf keinen Zugriff geben' },
+  );
+
+  // A verified address outside the approved DHBW domains must still be rejected.
+  const externalAccount = await createVerifiedAccount(auth, `external-${randomUUID()}@example.com`);
+  const externalLink = await api(baseUrl, '/api/gym/auth/link', externalAccount.token, {
+    method: 'POST',
+    body: {},
+  });
+  assert.equal(externalLink.response.status, 403);
+
+  // An unverified DHBW address must not be allowed to link or access an account.
+  const unverified = await createUnverifiedAccount(auth, `unverified-${randomUUID()}@bad-mergentheim.dhbw.de`);
+  const unverifiedLink = await api(baseUrl, '/api/gym/auth/link', unverified.token, {
+    method: 'POST',
+    body: {},
+  });
+  assert.equal(unverifiedLink.response.status, 403);
 });
+
+function assertLinkRejectionDidNotMutateLegacyProfile(
+  database: DatabaseSync,
+  repository: GymAppRepository,
+  firebaseUid: string,
+  principalId: string,
+  expectedProfile: { firstName: string; bio: string },
+): void {
+  assert.equal(
+    repository.findPrincipalForVerifiedAccount('firebase', firebaseUid),
+    undefined,
+    'a rejected link must not associate the Firebase UID with any local profile',
+  );
+  assert.equal(
+    database.prepare("SELECT id FROM gym_accounts WHERE provider = 'firebase' AND subject = ?")
+      .get(firebaseUid),
+    undefined,
+    'a rejected link must not leave a Firebase account record behind',
+  );
+
+  const principal = database.prepare('SELECT account_id AS accountId FROM gym_principals WHERE id = ?')
+    .get(principalId) as { accountId: string | null } | undefined;
+  assert.equal(principal?.accountId, null, 'a rejected link must not alter the legacy principal');
+
+  const profile = database.prepare(
+    'SELECT first_name AS firstName, bio FROM community_profiles WHERE principal_id = ?',
+  ).get(principalId) as { firstName: string; bio: string } | undefined;
+  assert.ok(profile, 'the legacy profile must remain present after a rejected link');
+  assert.equal(profile.firstName, expectedProfile.firstName, 'the legacy profile name must remain unchanged');
+  assert.equal(profile.bio, expectedProfile.bio, 'the legacy profile bio must remain unchanged');
+}
 
 async function createVerifiedAccount(auth: ReturnType<typeof getAuth>, email: string) {
   const password = `test-${randomUUID()}-Pass9`;
@@ -127,6 +268,16 @@ async function createVerifiedAccount(auth: ReturnType<typeof getAuth>, email: st
   return account;
 }
 
+async function createUnverifiedAccount(auth: ReturnType<typeof getAuth>, email: string) {
+  const password = `test-${randomUUID()}-Pass9`;
+  const credential = await createUserWithEmailAndPassword(auth, email, password);
+  await sendEmailVerification(credential.user);
+  const token = await credential.user.getIdToken();
+  const account = { uid: credential.user.uid, token };
+  await signOut(auth);
+  return account;
+}
+
 async function linkAccount(baseUrl: string, token: string): Promise<void> {
   const result = await api(baseUrl, '/api/gym/auth/link', token, {
     method: 'POST',
@@ -147,12 +298,13 @@ async function api(
   baseUrl: string,
   path: string,
   token: string,
-  options: { method?: string; body?: Record<string, unknown> } = {},
+  options: { method?: string; body?: Record<string, unknown>; cookie?: string } = {},
 ): Promise<{ response: Response; body: Record<string, unknown> }> {
   const response = await fetch(`${baseUrl}${path}`, {
     method: options.method ?? 'GET',
     headers: {
       Authorization: `Bearer ${token}`,
+      ...(options.cookie ? { Cookie: options.cookie } : {}),
       ...(options.body ? { 'Content-Type': 'application/json' } : {}),
     },
     ...(options.body ? { body: JSON.stringify(options.body) } : {}),
