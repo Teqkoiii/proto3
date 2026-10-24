@@ -345,6 +345,15 @@ export function createGymAppApi(database: DatabaseSync, options: GymApiOptions =
     });
   }));
 
+  app.post('/api/gym/community/groups', requireSession, asyncRoute(async (request, response) => {
+    if (!options.communityConversationWriter) {
+      throw new GymDomainError('community chat is unavailable', 503);
+    }
+    const conversation = service.createCommunityGroupConversation(request.principalId!, request.body);
+    await options.communityConversationWriter(conversation);
+    response.status(201).json({ conversationId: conversation.id, participantIds: conversation.participantIds });
+  }));
+
   app.get('/api/gym/community/conversations', requireSession, asyncRoute(async (request, response) => {
     if (!options.communityConversationReader) {
       throw new GymDomainError('community chat is unavailable', 503);
