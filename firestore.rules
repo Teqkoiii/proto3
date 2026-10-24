@@ -11,7 +11,7 @@ service cloud.firestore {
       return request.auth != null &&
              request.auth.token.email_verified == true &&
              request.auth.token.email is string &&
-             request.auth.token.email.lower().matches('^[^@]+@(bad-mergentheim\\.dhbw\\.de|badmergentheim\\.dhbw\\.de|dhbw-mannheim\\.de|dhbw-mosbach\\.de|dhbw-stuttgart\\.de|dhbw\\.de|heilbronn\\.dhbw\\.de|lehre\\.dhbw-mannheim\\.de)$');
+             request.auth.token.email.lower().matches('^[^@]+@(bad-mergentheim\\.dhbw\\.de|badmergentheim\\.dhbw\\.de|dhbw-mannheim\\.de|dhbw-mosbach\\.de|dhbw-stuttgart\\.de|dhbw\\.de|heilbronn\\.dhbw\\.de|lehre\\.dhbw-mannheim\\.de|lehre\\.mosbach\\.dhbw\\.de|mosbach\\.dhbw\\.de)$');
     }
 
     function canCreateNotification(userId, data) {
