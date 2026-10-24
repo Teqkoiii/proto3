@@ -306,9 +306,9 @@ export async function sendChatMessage(
       console.error('[Community chat] Message notification failed', err);
     });
   }
-}
 
   return messageDoc;
+}
 
 /**
  * Firestore Real-Time Notifications & Slot Reminders
