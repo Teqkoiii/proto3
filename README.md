@@ -26,7 +26,7 @@ npm run build
 
 Required environment variables are documented in `.env.example`. Store real keys only in a local, untracked `.env` file. Never publish API keys, passwords, or other credentials.
 
-The in-chat GIF picker uses the Tenor API through the authenticated server route. Set `TENOR_API_KEY` in the server environment (or local ignored `.env`) before using GIF search. Keep the key server-side; it must never be added to `VITE_*` variables or client code. Without the key, normal text chat and direct GIF links still work, but search returns a configuration message.
+The in-chat GIF picker uses the GIPHY Search API directly from the client, as required by GIPHY. Set `VITE_GIPHY_API_KEY` in your local ignored `.env` or build environment before using GIF search. Client-side API keys are visible in the app bundle, so use a GIPHY API key intended for client-side use and rotate any key accidentally shared publicly. GIPHY beta keys are rate-limited; verify the key is an API key, not an SDK-only key. Without the key, normal text chat and direct GIF links still work, but search returns a configuration message.
 
 ## Isolated Firebase test setup
 
