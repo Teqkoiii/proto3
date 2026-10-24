@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   Check,
   Dumbbell,
+  ImagePlus,
   MessageSquare,
   Minimize2,
   Send,
@@ -17,6 +18,19 @@ import {
   type CloudConversation,
 } from '../../services/communityChatService';
 import { gymRepository, type CommunityMember } from '../../services/gymRepository';
+
+function isSupportedGifUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+    return url.protocol === 'https:' &&
+      (host === 'media.giphy.com' || host === 'giphy.com' ||
+       host === 'media.tenor.com' || host === 'tenor.com' || host.endsWith('.giphy.com') || host.endsWith('.tenor.com')) &&
+      (url.pathname.toLowerCase().endsWith('.gif') || host === 'media.tenor.com' || host === 'media.giphy.com');
+  } catch {
+    return false;
+  }
+}
 
 const QUICK_PROMPTS = [
   'Bin in 10 Min da! 💪',
@@ -48,6 +62,8 @@ export function ChatDrawer({
   const [otherParticipantUid, setOtherParticipantUid] = useState<string | undefined>();
   const [messages, setMessages] = useState<CloudChatMessage[]>([]);
   const [text, setText] = useState('');
+  const [showGifInput, setShowGifInput] = useState(false);
+  const [gifUrl, setGifUrl] = useState('');
   const [sending, setSending] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -291,7 +307,13 @@ export function ChatDrawer({
                   >
                     {!isMe && <span className="chat-bubble-sender">{m.senderName}</span>}
                     <div className={`chat-bubble ${isMe ? 'bubble-self' : 'bubble-partner'}`}>
-                      <p className="chat-bubble-text">{m.text}</p>
+                      {isSupportedGifUrl(m.text) ? (
+                        <a href={m.text} target="_blank" rel="noreferrer" className="chat-gif-link" aria-label="GIF in neuem Tab öffnen">
+                          <img src={m.text} alt="Geteiltes GIF" loading="lazy" className="chat-gif-image" />
+                        </a>
+                      ) : (
+                        <p className="chat-bubble-text">{m.text}</p>
+                      )}
                       <span className="chat-bubble-time">
                         {new Date(m.createdAt).toLocaleTimeString([], {
                           hour: '2-digit',
@@ -321,6 +343,31 @@ export function ChatDrawer({
             ))}
           </div>
 
+          {showGifInput && (
+            <form className="chat-input-bar" onSubmit={(event) => {
+              event.preventDefault();
+              if (!isSupportedGifUrl(gifUrl.trim()) || sending) return;
+              void handleSend(gifUrl.trim()).then(() => {
+                setGifUrl('');
+                setShowGifInput(false);
+              });
+            }}>
+              <input
+                type="url"
+                className="chat-text-input"
+                placeholder="HTTPS-GIF-Link von Giphy oder Tenor"
+                value={gifUrl}
+                maxLength={500}
+                onChange={(event) => setGifUrl(event.target.value)}
+                aria-label="GIF-Link"
+              />
+              <button type="submit" className="chat-send-button"
+                disabled={!isSupportedGifUrl(gifUrl.trim()) || sending} aria-label="GIF senden">
+                <Send size={15} />
+              </button>
+            </form>
+          )}
+
           {/* Input Bar */}
           <form
             className="chat-input-bar"
@@ -329,6 +376,10 @@ export function ChatDrawer({
               void handleSend();
             }}
           >
+            <button type="button" className="chat-send-button" onClick={() => setShowGifInput((open) => !open)}
+              aria-label="GIF-Link einfügen" title="GIF von Giphy oder Tenor senden">
+              <ImagePlus size={16} />
+            </button>
             <input
               type="text"
               className="chat-text-input"
