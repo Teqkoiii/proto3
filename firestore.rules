@@ -25,17 +25,25 @@ service cloud.firestore {
                  isValidId(data.eventId) &&
                  data.id == data.eventId &&
                  exists(/databases/$(database)/documents/conversations/$(data.resourceId)) &&
-                 isValidConversation(get(/databases/$(database)/documents/conversations/$(data.resourceId)).data) &&
-                 get(/databases/$(database)/documents/conversations/$(data.resourceId)).data.id == data.resourceId &&
-                 request.auth.uid in get(/databases/$(database)/documents/conversations/$(data.resourceId)).data.participantIds &&
-                 userId in get(/databases/$(database)/documents/conversations/$(data.resourceId)).data.participantIds &&
                  exists(/databases/$(database)/documents/conversations/$(data.resourceId)/messages/$(data.eventId)) &&
-                 isValidChatMessage(get(/databases/$(database)/documents/conversations/$(data.resourceId)/messages/$(data.eventId)).data) &&
-                 get(/databases/$(database)/documents/conversations/$(data.resourceId)/messages/$(data.eventId)).data.id == data.eventId &&
-                 get(/databases/$(database)/documents/conversations/$(data.resourceId)/messages/$(data.eventId)).data.conversationId == data.resourceId &&
-                 get(/databases/$(database)/documents/conversations/$(data.resourceId)/messages/$(data.eventId)).data.senderId == request.auth.uid
+                 isNotificationMessageParticipantEvent(data.resourceId, data.eventId, userId)
                )
              );
+    }
+
+    function isNotificationMessageParticipantEvent(conversationId, messageId, userId) {
+      let conversation = get(/databases/$(database)/documents/conversations/$(conversationId)).data;
+      let message = get(/databases/$(database)/documents/conversations/$(conversationId)/messages/$(messageId)).data;
+      return conversation.id == conversationId &&
+             conversation.participantIds is list &&
+             conversation.participantIds.size() >= 2 &&
+             conversation.participantIds.size() <= 10 &&
+             request.auth.uid in conversation.participantIds &&
+             userId in conversation.participantIds &&
+             message.id == messageId &&
+             message.conversationId == conversationId &&
+             message.senderId == request.auth.uid &&
+             message.senderId in conversation.participantIds;
     }
 
     function incoming() {
@@ -49,6 +57,11 @@ service cloud.firestore {
     function isValidId(id) {
       return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_-]+$');
     }
+    function isValidParticipantId(value) {
+      // Firebase Auth UIDs are opaque identifiers; avoid regex evaluation for each group member.
+      return value is string && value.size() > 0 && value.size() <= 128;
+    }
+
     function isValidTimestampString(value) {
       return value is string && value.size() <= 40 &&
              value.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?(Z|[+-][0-9]{2}:[0-9]{2})$');
@@ -93,17 +106,37 @@ service cloud.firestore {
     function isValidConversation(data) {
       return data.keys().hasAll(['id', 'participantIds']) &&
              data.keys().hasOnly([
-               'id', 'participantIds', 'participantNames', 'createdAt',
+               'id', 'participantIds', 'participantNames', 'createdAt', 'title',
                'lastMessageText', 'lastMessageAt', 'lastSenderId'
              ]) &&
              isValidId(data.id) &&
              data.participantIds is list &&
-             data.participantIds.size() == 2 &&
-             isValidId(data.participantIds[0]) &&
-             isValidId(data.participantIds[1]) &&
-             data.participantIds[0] != data.participantIds[1] &&
-             (!('participantNames' in data) || (data.participantNames is map && data.participantNames.keys().hasOnly(data.participantIds) && data.participantNames.keys().hasAll(data.participantIds) && data.participantNames[data.participantIds[0]] is string && data.participantNames[data.participantIds[0]].size() <= 60 && data.participantNames[data.participantIds[1]] is string && data.participantNames[data.participantIds[1]].size() <= 60)) &&
+             data.participantIds.size() >= 2 && data.participantIds.size() <= 10 &&
+             (data.participantIds.size() < 1 || isValidParticipantId(data.participantIds[0])) &&
+             (data.participantIds.size() < 2 || isValidParticipantId(data.participantIds[1])) &&
+             (data.participantIds.size() < 3 || isValidParticipantId(data.participantIds[2])) &&
+             (data.participantIds.size() < 4 || isValidParticipantId(data.participantIds[3])) &&
+             (data.participantIds.size() < 5 || isValidParticipantId(data.participantIds[4])) &&
+             (data.participantIds.size() < 6 || isValidParticipantId(data.participantIds[5])) &&
+             (data.participantIds.size() < 7 || isValidParticipantId(data.participantIds[6])) &&
+             (data.participantIds.size() < 8 || isValidParticipantId(data.participantIds[7])) &&
+             (data.participantIds.size() < 9 || isValidParticipantId(data.participantIds[8])) &&
+             (data.participantIds.size() < 10 || isValidParticipantId(data.participantIds[9])) &&
+             (!('participantNames' in data) || (data.participantNames is map &&
+               data.participantNames.keys().hasOnly(data.participantIds) &&
+               data.participantNames.keys().hasAll(data.participantIds) &&
+               (data.participantIds.size() < 1 || (data.participantNames[data.participantIds[0]] is string && data.participantNames[data.participantIds[0]].size() <= 60)) &&
+               (data.participantIds.size() < 2 || (data.participantNames[data.participantIds[1]] is string && data.participantNames[data.participantIds[1]].size() <= 60)) &&
+               (data.participantIds.size() < 3 || (data.participantNames[data.participantIds[2]] is string && data.participantNames[data.participantIds[2]].size() <= 60)) &&
+               (data.participantIds.size() < 4 || (data.participantNames[data.participantIds[3]] is string && data.participantNames[data.participantIds[3]].size() <= 60)) &&
+               (data.participantIds.size() < 5 || (data.participantNames[data.participantIds[4]] is string && data.participantNames[data.participantIds[4]].size() <= 60)) &&
+               (data.participantIds.size() < 6 || (data.participantNames[data.participantIds[5]] is string && data.participantNames[data.participantIds[5]].size() <= 60)) &&
+               (data.participantIds.size() < 7 || (data.participantNames[data.participantIds[6]] is string && data.participantNames[data.participantIds[6]].size() <= 60)) &&
+               (data.participantIds.size() < 8 || (data.participantNames[data.participantIds[7]] is string && data.participantNames[data.participantIds[7]].size() <= 60)) &&
+               (data.participantIds.size() < 9 || (data.participantNames[data.participantIds[8]] is string && data.participantNames[data.participantIds[8]].size() <= 60)) &&
+               (data.participantIds.size() < 10 || (data.participantNames[data.participantIds[9]] is string && data.participantNames[data.participantIds[9]].size() <= 60)))) &&
              (!('createdAt' in data) || isValidTimestampString(data.createdAt)) &&
+             (!('title' in data) || (data.title is string && data.title.size() <= 80)) &&
              (!('lastMessageText' in data) || (data.lastMessageText is string && data.lastMessageText.size() <= 500)) &&
              (!('lastMessageAt' in data) || isValidTimestampString(data.lastMessageAt)) &&
              (!('lastSenderId' in data) ||

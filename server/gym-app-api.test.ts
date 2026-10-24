@@ -15,11 +15,13 @@ async function startApi(t: TestContext, options: {
   secureCookies?: boolean;
   allowedOrigins?: string[];
   firebaseTokenVerifier?: (token: string) => Promise<{ uid: string; email: string | null; emailVerified: boolean }>;
+  communityConversationWriter?: (conversation: { id: string; participantIds: string[]; participantNames: Record<string, string>; createdAt: string; title?: string }) => Promise<void>;
 } = {}) {
   const database = new DatabaseSync(':memory:');
   const server = createServer(createGymAppApi(database, {
     secureCookies: options.secureCookies ?? false,
     allowedOrigins: options.allowedOrigins,
+    communityConversationWriter: options.communityConversationWriter,
     firebaseTokenVerifier: options.firebaseTokenVerifier ?? (async (token) => {
       if (token === 'revoked-token') throw new Error('token has been revoked');
       try {
@@ -87,6 +89,41 @@ async function createLegacyProfile(database: DatabaseSync, options: { email?: st
   }
   return { token, principalId, repository };
 }
+
+test('public occupancy and booking-slot reads do not trigger cleanup or write history samples', async (t) => {
+  const { baseUrl, database } = await startApi(t);
+  const legacy = await createLegacyProfile(database);
+  const sessionHash = createHash('sha256').update(legacy.token).digest('hex');
+  database.prepare('UPDATE app_sessions SET expires_at = ? WHERE session_hash = ?')
+    .run(new Date(Date.now() - 60_000).toISOString(), sessionHash);
+  database.prepare('UPDATE occupancy_samples SET sampled_at = ?')
+    .run(new Date(Date.now() - 120_000).toISOString());
+
+  const beforeSamples = (database.prepare('SELECT COUNT(*) AS count FROM occupancy_samples').get() as { count: number }).count;
+  for (let i = 0; i < 3; i += 1) {
+    const response = await fetch(`${baseUrl}/api/gym/occupancy?range=24h`);
+    assert.equal(response.status, 200);
+    const snapshot = await response.json() as {
+      count: number;
+      source: string;
+      history: { points: unknown[] };
+    };
+    assert.equal(snapshot.count, 0, 'the public snapshot must still return the current occupancy');
+    assert.equal(snapshot.source, 'self-reported-manual-check-ins');
+    assert.ok(Array.isArray(snapshot.history.points), 'the public endpoint must continue returning history points');
+    const bookingsResponse = await fetch(`${baseUrl}/api/gym/bookings`);
+    assert.equal(bookingsResponse.status, 200);
+    const bookingSnapshot = await bookingsResponse.json() as { slots: unknown[]; capacityConfigured: boolean };
+    assert.ok(Array.isArray(bookingSnapshot.slots), 'the public booking endpoint must continue returning slots');
+    assert.equal(bookingSnapshot.capacityConfigured, false);
+  }
+  const afterSamples = (database.prepare('SELECT COUNT(*) AS count FROM occupancy_samples').get() as { count: number }).count;
+  const expiredSessionRows = (database.prepare('SELECT COUNT(*) AS count FROM app_sessions WHERE session_hash = ?')
+    .get(sessionHash) as { count: number }).count;
+
+  assert.equal(afterSamples, beforeSamples, 'public GET requests must not create occupancy history samples');
+  assert.equal(expiredSessionRows, 1, 'public GET requests must not trigger database cleanup');
+});
 
 test('manual check-in is shared, idempotent, and scoped to the server session', async (t) => {
   const { baseUrl } = await startApi(t);
@@ -483,6 +520,45 @@ test('a valid previous session can migrate its own profile without enabling cook
   assert.equal((await fetch(`${baseUrl}/api/gym/workouts`, {
     headers: { cookie: `gym_app_session=${activeSessionToken}` },
   })).status, 401);
+});
+
+test('group conversations validate unique DHBW members and store all participant names', async (t) => {
+  const written: Array<{ id: string; participantIds: string[]; participantNames: Record<string, string>; createdAt: string; title?: string }> = [];
+  const { baseUrl, database } = await startApi(t, {
+    communityConversationWriter: async (conversation) => { written.push(conversation); },
+  });
+  const owner = await createAuthenticatedClient(baseUrl, 'group-owner');
+  const firstMember = await createAuthenticatedClient(baseUrl, 'group-member-one');
+  const secondMember = await createAuthenticatedClient(baseUrl, 'group-member-two');
+  await Promise.all([
+    owner.request('/api/gym/profile/community'),
+    firstMember.request('/api/gym/profile/community'),
+    secondMember.request('/api/gym/profile/community'),
+  ]);
+  const repository = new GymAppRepository(database);
+  const firstPrincipal = repository.findPrincipalForVerifiedAccount('firebase', 'group-member-one');
+  const secondPrincipal = repository.findPrincipalForVerifiedAccount('firebase', 'group-member-two');
+  assert.ok(firstPrincipal);
+  assert.ok(secondPrincipal);
+
+  const invalid = await owner.request('/api/gym/community/groups', {
+    method: 'POST',
+    body: JSON.stringify({ participantPrincipalIds: [firstPrincipal, firstPrincipal], title: 'Doppelt' }),
+  });
+  assert.equal(invalid.status, 400);
+  assert.equal(written.length, 0);
+
+  const created = await owner.request('/api/gym/community/groups', {
+    method: 'POST',
+    body: JSON.stringify({ participantPrincipalIds: [firstPrincipal, secondPrincipal], title: 'Frühschicht' }),
+  });
+  assert.equal(created.status, 201);
+  const payload = await created.json() as { conversationId: string; participantIds: string[] };
+  assert.match(payload.conversationId, /^group_/);
+  assert.equal(payload.participantIds.length, 3);
+  assert.equal(written.length, 1);
+  assert.equal(written[0]?.title, 'Frühschicht');
+  assert.equal(Object.keys(written[0]?.participantNames ?? {}).length, 3);
 });
 
 test('availability never reports a capacity or place limit', async (t) => {
