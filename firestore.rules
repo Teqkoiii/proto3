@@ -23,6 +23,7 @@ service cloud.firestore {
                  data.type == 'new_message' &&
                  isValidId(data.resourceId) &&
                  isValidId(data.eventId) &&
+                 data.id == data.eventId &&
                  exists(/databases/$(database)/documents/conversations/$(data.resourceId)) &&
                  isValidConversation(get(/databases/$(database)/documents/conversations/$(data.resourceId)).data) &&
                  get(/databases/$(database)/documents/conversations/$(data.resourceId)).data.id == data.resourceId &&
