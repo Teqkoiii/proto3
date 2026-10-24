@@ -321,12 +321,11 @@ test('conversations and chat messages are limited to conversation participants',
 
   const aliceDb = signedIn(alice);
   const bobDb = signedIn(bob);
-  const charlieDb = signedIn({ ...outsider, uid: 'charlie' });
+  const charlieDb = signedIn({ uid: 'charlie', email: 'charlie@bad-mergentheim.dhbw.de', email_verified: true });
   const conversationRef = doc(aliceDb, 'conversations/conversation-one');
   const messageRef = doc(aliceDb, 'conversations/conversation-one/messages/message-one');
   await assertSucceeds(getDoc(conversationRef));
   await assertSucceeds(getDoc(doc(bobDb, 'conversations/conversation-one')));
-  const charlieDb = signedIn({ uid: 'charlie', email: 'charlie@bad-mergentheim.dhbw.de', email_verified: true });
   await assertSucceeds(getDoc(doc(charlieDb, 'conversations/group-one')));
   await assertSucceeds(getDoc(doc(bobDb, 'conversations/group-one/messages/group-message')));
   await assertFails(getDoc(doc(signedIn(outsider), 'conversations/group-one')));
